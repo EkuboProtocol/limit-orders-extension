@@ -4,7 +4,7 @@ version = 1
 [[package]]
 name = "ekubo"
 version = "0.1.0"
-source = "git+https://github.com/ekuboprotocol/abis#a926a6f17aee6a9d630583ab85d74b2b69d915d1"
+source = "git+https://github.com/ekuboprotocol/abis#6268e56c64851cd61ccbdc9a0aa8e66d9a950608"
 
 [[package]]
 name = "ekubo_limit_orders_extension"
@@ -17,4 +17,4 @@ dependencies = [
 [[package]]
 name = "snforge_std"
 version = "0.26.0"
-source = "git+https://github.com/foundry-rs/starknet-foundry#a1289918ba5f0fb112216eb686464c710db5b38b"
+source = "git+https://github.com/foundry-rs/starknet-foundry#c633861937bc7076bd79a4450ca9f4a1b5f344b0"

@@ -4,6 +4,7 @@ use core::traits::{TryInto};
 use ekubo::interfaces::core::{
     ICoreDispatcherTrait, ICoreDispatcher, IExtensionDispatcher, IExtensionDispatcherTrait
 };
+use ekubo::interfaces::mathlib::{IMathLibDispatcher};
 use ekubo::interfaces::positions::{IPositionsDispatcher, IPositionsDispatcherTrait};
 use ekubo::interfaces::router::{IRouterDispatcher, IRouterDispatcherTrait, RouteNode, TokenAmount};
 use ekubo::types::bounds::{Bounds};
@@ -33,10 +34,16 @@ fn deploy_token(
     IERC20Dispatcher { contract_address }
 }
 
-fn deploy_LimitOrders(core: ICoreDispatcher) -> IExtensionDispatcher {
+fn deploy_limit_orders(core: ICoreDispatcher) -> IExtensionDispatcher {
     let contract = declare("LimitOrders").unwrap();
     let (contract_address, _) = contract
-        .deploy(@array![get_contract_address().into(), core.contract_address.into()])
+        .deploy(
+            @array![
+                get_contract_address().into(),
+                core.contract_address.into(),
+                ekubo_mathlib().contract_address.into()
+            ]
+        )
         .expect('Deploy failed');
 
     IExtensionDispatcher { contract_address }
@@ -46,6 +53,14 @@ fn ekubo_core() -> ICoreDispatcher {
     ICoreDispatcher {
         contract_address: contract_address_const::<
             0x00000005dd3D2F4429AF886cD1a3b08289DBcEa99A294197E9eB43b0e0325b4b
+        >()
+    }
+}
+
+fn ekubo_mathlib() -> IMathLibDispatcher {
+    IMathLibDispatcher {
+        contract_address: contract_address_const::<
+            0x06e7a644bb6b781f289c5e44a58f92e9da9b6af47303dcc8ee2acdd200227354
         >()
     }
 }
@@ -67,7 +82,7 @@ fn router() -> IRouterDispatcher {
 }
 
 fn setup(starting_balance: u256, fee: u128, tick_spacing: u128) -> PoolKey {
-    let LimitOrders = deploy_LimitOrders(ekubo_core());
+    let limit_orders = deploy_limit_orders(ekubo_core());
     let token_class = declare("TestToken").unwrap();
     let owner = get_contract_address();
     let (tokenA, tokenB) = (
@@ -85,7 +100,7 @@ fn setup(starting_balance: u256, fee: u128, tick_spacing: u128) -> PoolKey {
         token1: token1.contract_address,
         fee: fee,
         tick_spacing: tick_spacing,
-        extension: LimitOrders.contract_address,
+        extension: limit_orders.contract_address,
     };
 
     pool_key
@@ -93,14 +108,14 @@ fn setup(starting_balance: u256, fee: u128, tick_spacing: u128) -> PoolKey {
 
 #[test]
 #[fork("mainnet")]
-fn test_LimitOrders_sets_call_points() {
+fn test_constructor_sets_call_points() {
     let pool_key = setup(starting_balance: 1000, fee: 0, tick_spacing: 100);
     assert_eq!(
         ekubo_core().get_call_points(pool_key.extension),
         CallPoints {
             before_initialize_pool: true,
             after_initialize_pool: false,
-            before_swap: true,
+            before_swap: false,
             after_swap: true,
             before_update_position: true,
             after_update_position: false,
