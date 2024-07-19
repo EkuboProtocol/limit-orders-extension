@@ -199,7 +199,9 @@ pub mod LimitOrders {
         ICoreDispatcherTrait
     };
     use ekubo::interfaces::erc20::{IERC20Dispatcher, IERC20DispatcherTrait};
-    use ekubo::interfaces::mathlib::{IMathLibDispatcher, IMathLibDispatcherTrait};
+    use ekubo::interfaces::mathlib::{
+        IMathLibLibraryDispatcher, IMathLibDispatcherTrait, dispatcher as mathlib
+    };
     use ekubo::types::bounds::{Bounds};
     use ekubo::types::call_points::{CallPoints};
     use ekubo::types::delta::{Delta};
@@ -232,7 +234,6 @@ pub mod LimitOrders {
         pools: LegacyMap<PoolKey, PoolState>,
         orders: LegacyMap<(ContractAddress, felt252, OrderKey), OrderState>,
         ticks_crossed_last_crossing: LegacyMap<(PoolKey, i129), u64>,
-        mathlib: IMathLibDispatcher,
         #[substorage(v0)]
         upgradeable: upgradeable_component::Storage,
         #[substorage(v0)]
@@ -240,15 +241,9 @@ pub mod LimitOrders {
     }
 
     #[constructor]
-    fn constructor(
-        ref self: ContractState,
-        owner: ContractAddress,
-        core: ICoreDispatcher,
-        mathlib: IMathLibDispatcher
-    ) {
+    fn constructor(ref self: ContractState, owner: ContractAddress, core: ICoreDispatcher,) {
         self.initialize_owned(owner);
         self.core.write(core);
-        self.mathlib.write(mathlib);
         core
             .set_call_points(
                 CallPoints {
@@ -668,17 +663,17 @@ pub mod LimitOrders {
                 }
             }
 
-            let mathlib = self.mathlib.read();
+            let math = mathlib();
 
-            let sqrt_ratio_lower = mathlib.tick_to_sqrt_ratio(order_key.tick);
-            let sqrt_ratio_upper = mathlib
+            let sqrt_ratio_lower = math.tick_to_sqrt_ratio(order_key.tick);
+            let sqrt_ratio_upper = math
                 .tick_to_sqrt_ratio(
                     order_key.tick + i129 { mag: LIMIT_ORDER_TICK_SPACING, sign: false }
                 );
             let liquidity = if is_selling_token1 {
-                mathlib.max_liquidity_for_token1(sqrt_ratio_lower, sqrt_ratio_upper, amount)
+                math.max_liquidity_for_token1(sqrt_ratio_lower, sqrt_ratio_upper, amount)
             } else {
-                mathlib.max_liquidity_for_token0(sqrt_ratio_lower, sqrt_ratio_upper, amount)
+                math.max_liquidity_for_token0(sqrt_ratio_lower, sqrt_ratio_upper, amount)
             };
 
             assert(liquidity > 0, 'SELL_AMOUNT_TOO_SMALL');
@@ -744,16 +739,16 @@ pub mod LimitOrders {
             // the order is fully executed, just withdraw the saved balance
             let (amount0, amount1) = if (ticks_crossed_at_order_tick > order
                 .ticks_crossed_at_create) {
-                let mathlib = self.mathlib.read();
-                let sqrt_ratio_a = mathlib.tick_to_sqrt_ratio(order_key.tick);
-                let sqrt_ratio_b = mathlib
+                let math = mathlib();
+                let sqrt_ratio_a = math.tick_to_sqrt_ratio(order_key.tick);
+                let sqrt_ratio_b = math
                     .tick_to_sqrt_ratio(
                         order_key.tick + i129 { mag: LIMIT_ORDER_TICK_SPACING, sign: false }
                     );
 
                 let (amount0, amount1) = if is_selling_token1 {
                     (
-                        mathlib
+                        math
                             .amount0_delta(
                                 sqrt_ratio_a,
                                 sqrt_ratio_b,
@@ -765,7 +760,7 @@ pub mod LimitOrders {
                 } else {
                     (
                         0_u128,
-                        mathlib
+                        math
                             .amount1_delta(
                                 sqrt_ratio_a,
                                 sqrt_ratio_b,
@@ -824,7 +819,7 @@ pub mod LimitOrders {
 
             let core = self.core.read();
 
-            let mathlib = self.mathlib.read();
+            let math = mathlib();
 
             while let Option::Some(request) = requests
                 .pop_front() {
@@ -858,8 +853,8 @@ pub mod LimitOrders {
 
                     // the order is fully executed, just withdraw the saved balance
                     if (ticks_crossed_at_order_tick > order.ticks_crossed_at_create) {
-                        let sqrt_ratio_a = mathlib.tick_to_sqrt_ratio(*request.order_key.tick);
-                        let sqrt_ratio_b = mathlib
+                        let sqrt_ratio_a = math.tick_to_sqrt_ratio(*request.order_key.tick);
+                        let sqrt_ratio_b = math
                             .tick_to_sqrt_ratio(
                                 *request.order_key.tick
                                     + i129 { mag: LIMIT_ORDER_TICK_SPACING, sign: false }
@@ -867,7 +862,7 @@ pub mod LimitOrders {
 
                         let (amount0, amount1) = if is_selling_token1 {
                             (
-                                mathlib
+                                math
                                     .amount0_delta(
                                         sqrt_ratio_a,
                                         sqrt_ratio_b,
@@ -879,7 +874,7 @@ pub mod LimitOrders {
                         } else {
                             (
                                 0,
-                                mathlib
+                                math
                                     .amount1_delta(
                                         sqrt_ratio_a,
                                         sqrt_ratio_b,
@@ -896,13 +891,12 @@ pub mod LimitOrders {
                                 }
                             );
                     } else {
-                        let delta = mathlib
+                        let delta = math
                             .liquidity_delta_to_amount_delta(
                                 sqrt_ratio: price.sqrt_ratio,
                                 liquidity_delta: i129 { mag: order.liquidity, sign: true },
-                                sqrt_ratio_lower: mathlib
-                                    .tick_to_sqrt_ratio(*request.order_key.tick),
-                                sqrt_ratio_upper: mathlib
+                                sqrt_ratio_lower: math.tick_to_sqrt_ratio(*request.order_key.tick),
+                                sqrt_ratio_upper: math
                                     .tick_to_sqrt_ratio(
                                         *request.order_key.tick
                                             + i129 { mag: LIMIT_ORDER_TICK_SPACING, sign: false }

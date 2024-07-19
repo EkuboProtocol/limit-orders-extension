@@ -37,13 +37,7 @@ fn deploy_token(
 fn deploy_limit_orders(core: ICoreDispatcher) -> IExtensionDispatcher {
     let contract = declare("LimitOrders").unwrap();
     let (contract_address, _) = contract
-        .deploy(
-            @array![
-                get_contract_address().into(),
-                core.contract_address.into(),
-                ekubo_mathlib().contract_address.into()
-            ]
-        )
+        .deploy(@array![get_contract_address().into(), core.contract_address.into(),])
         .expect('Deploy failed');
 
     IExtensionDispatcher { contract_address }
@@ -53,14 +47,6 @@ fn ekubo_core() -> ICoreDispatcher {
     ICoreDispatcher {
         contract_address: contract_address_const::<
             0x00000005dd3D2F4429AF886cD1a3b08289DBcEa99A294197E9eB43b0e0325b4b
-        >()
-    }
-}
-
-fn ekubo_mathlib() -> IMathLibDispatcher {
-    IMathLibDispatcher {
-        contract_address: contract_address_const::<
-            0x06e7a644bb6b781f289c5e44a58f92e9da9b6af47303dcc8ee2acdd200227354
         >()
     }
 }
