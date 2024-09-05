@@ -13,14 +13,17 @@ pub trait IERC20<TContractState> {
 
 #[starknet::contract]
 pub mod TestToken {
-    use core::num::traits::zero::{Zero};
+    use starknet::storage::{
+        StorageMapWriteAccess, StorageMapReadAccess, StoragePointerWriteAccess, Map,
+        StoragePathEntry
+    };
     use starknet::{ContractAddress, get_caller_address};
     use super::{IERC20};
 
     #[storage]
     struct Storage {
-        balances: LegacyMap<ContractAddress, u256>,
-        allowances: LegacyMap<(ContractAddress, ContractAddress), u256>,
+        balances: Map<ContractAddress, u256>,
+        allowances: Map<ContractAddress, Map<ContractAddress, u256>>,
     }
 
     #[derive(starknet::Event, Drop)]
@@ -29,19 +32,19 @@ pub mod TestToken {
 
     #[constructor]
     fn constructor(ref self: ContractState, recipient: ContractAddress, amount: u256) {
-        self.balances.write(recipient, amount);
+        self.balances.entry(recipient).write(amount);
     }
 
     #[abi(embed_v0)]
     impl IERC20Impl of IERC20<ContractState> {
         fn balanceOf(self: @ContractState, account: ContractAddress) -> u256 {
-            self.balances.read(account).into()
+            self.balances.read(account)
         }
 
         fn allowance(
             self: @ContractState, owner: ContractAddress, spender: ContractAddress
         ) -> u256 {
-            self.allowances.read((owner, spender)).into()
+            self.allowances.entry(owner).read(spender)
         }
 
         fn transfer(ref self: ContractState, recipient: ContractAddress, amount: u256) -> bool {
@@ -58,18 +61,18 @@ pub mod TestToken {
             recipient: ContractAddress,
             amount: u256
         ) -> bool {
-            let allowance = self.allowances.read((sender, get_caller_address()));
+            let allowance = self.allowances.entry(sender).read(get_caller_address());
             assert(allowance >= amount, 'INSUFFICIENT_ALLOWANCE');
             let balance = self.balances.read(sender);
             assert(balance >= amount, 'INSUFFICIENT_TF_BALANCE');
             self.balances.write(recipient, self.balances.read(recipient) + amount);
             self.balances.write(sender, balance - amount);
-            self.allowances.write((sender, get_caller_address()), allowance - amount);
+            self.allowances.entry(sender).write(get_caller_address(), allowance - amount);
             true
         }
 
         fn approve(ref self: ContractState, spender: ContractAddress, amount: u256) -> bool {
-            self.allowances.write((get_caller_address(), spender), amount.try_into().unwrap());
+            self.allowances.entry(get_caller_address()).write(spender, amount.try_into().unwrap());
             true
         }
     }

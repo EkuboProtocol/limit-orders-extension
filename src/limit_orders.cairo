@@ -1,6 +1,6 @@
 use core::traits::{Into, TryInto};
 use ekubo::types::i129::{i129, i129Trait};
-use starknet::{ContractAddress, ClassHash, storage_access::{StorePacking}};
+use starknet::{ContractAddress, storage_access::{StorePacking}};
 
 #[derive(Drop, Copy, Serde, Hash)]
 pub struct OrderKey {
@@ -92,11 +92,13 @@ pub trait ILimitOrders<TContractState> {
         self: @TContractState, requests: Span<GetOrderInfoRequest>
     ) -> Span<GetOrderInfoResult>;
 
-    // Creates a new limit order, selling the given `sell_token` for the given `buy_token` at the specified tick
-    // The size of the new order is determined by the current balance of the sell token
+    // Creates a new limit order, selling the given `sell_token` for the given `buy_token` at the
+    // specified tick The size of the new order is determined by the current balance of the sell
+    // token
     fn place_order(ref self: TContractState, salt: felt252, order_key: OrderKey, amount: u128);
 
-    // Closes an order with the given token ID, returning the amount of token0 and token1 to the recipient
+    // Closes an order with the given token ID, returning the amount of token0 and token1 to the
+    // recipient
     fn close_order(
         ref self: TContractState, salt: felt252, order_key: OrderKey, recipient: ContractAddress
     ) -> (u128, u128);
@@ -104,34 +106,33 @@ pub trait ILimitOrders<TContractState> {
 
 #[starknet::contract]
 pub mod LimitOrders {
+    use starknet::storage::StoragePathEntry;
+    use starknet::storage::{
+        StoragePointerWriteAccess, StorageMapWriteAccess, StorageMapReadAccess,
+        StoragePointerReadAccess, Map
+    };
     use core::array::{ArrayTrait};
     use core::num::traits::{Zero};
-    use core::option::{OptionTrait};
-    use core::traits::{TryInto, Into};
+    use core::traits::{Into};
     use ekubo::components::clear::{ClearImpl};
     use ekubo::components::owned::{Owned as owned_component};
     use ekubo::components::shared_locker::{call_core_with_callback, consume_callback_data};
-    use ekubo::components::upgradeable::{
-        Upgradeable as upgradeable_component, IHasInterface, IUpgradeable, IUpgradeableDispatcher,
-        IUpgradeableDispatcherTrait
-    };
+    use ekubo::components::upgradeable::{Upgradeable as upgradeable_component, IHasInterface};
     use ekubo::interfaces::core::{
         IExtension, SwapParameters, UpdatePositionParameters, ILocker, ICoreDispatcher,
         ICoreDispatcherTrait
     };
     use ekubo::interfaces::erc20::{IERC20Dispatcher, IERC20DispatcherTrait};
-    use ekubo::interfaces::mathlib::{
-        IMathLibLibraryDispatcher, IMathLibDispatcherTrait, dispatcher as mathlib
-    };
+    use ekubo::interfaces::mathlib::{IMathLibDispatcherTrait, dispatcher as mathlib};
     use ekubo::types::bounds::{Bounds};
     use ekubo::types::call_points::{CallPoints};
     use ekubo::types::delta::{Delta};
     use ekubo::types::keys::{PoolKey, PositionKey};
     use ekubo::types::keys::{SavedBalanceKey};
-    use starknet::{get_contract_address, get_caller_address, ClassHash};
+    use starknet::{get_contract_address, get_caller_address};
     use super::{
-        ILimitOrders, i129, i129Trait, ContractAddress, OrderKey, OrderState, PoolState,
-        GetOrderInfoRequest, GetOrderInfoResult
+        ILimitOrders, i129, ContractAddress, OrderKey, OrderState, PoolState, GetOrderInfoRequest,
+        GetOrderInfoResult
     };
 
     pub const LIMIT_ORDER_TICK_SPACING: u128 = 100;
@@ -152,9 +153,9 @@ pub mod LimitOrders {
     #[storage]
     struct Storage {
         core: ICoreDispatcher,
-        pools: LegacyMap<PoolKey, PoolState>,
-        orders: LegacyMap<(ContractAddress, felt252, OrderKey), OrderState>,
-        ticks_crossed_last_crossing: LegacyMap<(PoolKey, i129), u64>,
+        pools: Map<PoolKey, PoolState>,
+        orders: Map<(ContractAddress, felt252, OrderKey), OrderState>,
+        ticks_crossed_last_crossing: Map<PoolKey, Map<i129, u64>>,
         #[substorage(v0)]
         upgradeable: upgradeable_component::Storage,
         #[substorage(v0)]
@@ -309,7 +310,8 @@ pub mod LimitOrders {
             pool_key: PoolKey,
             params: UpdatePositionParameters
         ) {
-            // only this contract can create positions, and the extension will not be called in that case, so always revert
+            // only this contract can create positions, and the extension will not be called in that
+            // case, so always revert
             panic!("ONLY_LIMIT_ORDERS");
         }
 
@@ -387,6 +389,10 @@ pub mod LimitOrders {
                     let state = self.pools.read(after_swap.pool_key);
                     let mut ticks_crossed = state.ticks_crossed;
 
+                    let pool_crossed_entry = self
+                        .ticks_crossed_last_crossing
+                        .entry(after_swap.pool_key);
+
                     if (price_after_swap.tick != state.last_tick) {
                         let price_increasing = price_after_swap.tick > state.last_tick;
                         let mut tick_current = state.last_tick;
@@ -453,9 +459,7 @@ pub mod LimitOrders {
                                         delta.amount0.mag
                                     };
                                 ticks_crossed += 1;
-                                self
-                                    .ticks_crossed_last_crossing
-                                    .write((after_swap.pool_key, next_tick), ticks_crossed);
+                                pool_crossed_entry.write(next_tick, ticks_crossed);
                             };
 
                             tick_current =
@@ -646,15 +650,13 @@ pub mod LimitOrders {
 
             let ticks_crossed_at_order_tick = self
                 .ticks_crossed_last_crossing
+                .entry(pool_key)
                 .read(
-                    (
-                        pool_key,
-                        if is_selling_token1 {
-                            order_key.tick
-                        } else {
-                            order_key.tick + i129 { mag: LIMIT_ORDER_TICK_SPACING, sign: false }
-                        }
-                    )
+                    if is_selling_token1 {
+                        order_key.tick
+                    } else {
+                        order_key.tick + i129 { mag: LIMIT_ORDER_TICK_SPACING, sign: false }
+                    }
                 );
 
             // the order is fully executed, just withdraw the saved balance
@@ -742,99 +744,92 @@ pub mod LimitOrders {
 
             let math = mathlib();
 
-            while let Option::Some(request) = requests
-                .pop_front() {
-                    let is_selling_token1 = (*request
-                        .order_key
-                        .tick
-                        .mag % DOUBLE_LIMIT_ORDER_TICK_SPACING)
-                        .is_non_zero();
-                    let pool_key = to_pool_key(*request.order_key);
-                    let price = core.get_pool_price(pool_key);
+            while let Option::Some(request) = requests.pop_front() {
+                let is_selling_token1 = (*request
+                    .order_key
+                    .tick
+                    .mag % DOUBLE_LIMIT_ORDER_TICK_SPACING)
+                    .is_non_zero();
+                let pool_key = to_pool_key(*request.order_key);
+                let price = core.get_pool_price(pool_key);
 
-                    assert(price.sqrt_ratio.is_non_zero(), 'INVALID_ORDER_KEY');
+                assert(price.sqrt_ratio.is_non_zero(), 'INVALID_ORDER_KEY');
 
-                    let ticks_crossed_at_order_tick = self
-                        .ticks_crossed_last_crossing
-                        .read(
-                            (
-                                pool_key,
-                                if is_selling_token1 {
-                                    *request.order_key.tick
-                                } else {
-                                    *request.order_key.tick
-                                        + i129 { mag: LIMIT_ORDER_TICK_SPACING, sign: false }
-                                }
-                            )
+                let ticks_crossed_at_order_tick = self
+                    .ticks_crossed_last_crossing
+                    .entry(pool_key)
+                    .read(
+                        if is_selling_token1 {
+                            *request.order_key.tick
+                        } else {
+                            *request.order_key.tick
+                                + i129 { mag: LIMIT_ORDER_TICK_SPACING, sign: false }
+                        }
+                    );
+
+                let order = self.orders.read((*request.owner, *request.salt, *request.order_key));
+
+                // the order is fully executed, just withdraw the saved balance
+                if (ticks_crossed_at_order_tick > order.ticks_crossed_at_create) {
+                    let sqrt_ratio_a = math.tick_to_sqrt_ratio(*request.order_key.tick);
+                    let sqrt_ratio_b = math
+                        .tick_to_sqrt_ratio(
+                            *request.order_key.tick
+                                + i129 { mag: LIMIT_ORDER_TICK_SPACING, sign: false }
                         );
 
-                    let order = self
-                        .orders
-                        .read((*request.owner, *request.salt, *request.order_key));
-
-                    // the order is fully executed, just withdraw the saved balance
-                    if (ticks_crossed_at_order_tick > order.ticks_crossed_at_create) {
-                        let sqrt_ratio_a = math.tick_to_sqrt_ratio(*request.order_key.tick);
-                        let sqrt_ratio_b = math
-                            .tick_to_sqrt_ratio(
-                                *request.order_key.tick
-                                    + i129 { mag: LIMIT_ORDER_TICK_SPACING, sign: false }
-                            );
-
-                        let (amount0, amount1) = if is_selling_token1 {
-                            (
-                                math
-                                    .amount0_delta(
-                                        sqrt_ratio_a,
-                                        sqrt_ratio_b,
-                                        liquidity: order.liquidity,
-                                        round_up: false
-                                    ),
-                                0
-                            )
-                        } else {
-                            (
-                                0,
-                                math
-                                    .amount1_delta(
-                                        sqrt_ratio_a,
-                                        sqrt_ratio_b,
-                                        liquidity: order.liquidity,
-                                        round_up: false
-                                    )
-                            )
-                        };
-
-                        result
-                            .append(
-                                GetOrderInfoResult {
-                                    state: order, executed: true, amount0, amount1
-                                }
-                            );
+                    let (amount0, amount1) = if is_selling_token1 {
+                        (
+                            math
+                                .amount0_delta(
+                                    sqrt_ratio_a,
+                                    sqrt_ratio_b,
+                                    liquidity: order.liquidity,
+                                    round_up: false
+                                ),
+                            0
+                        )
                     } else {
-                        let delta = math
-                            .liquidity_delta_to_amount_delta(
-                                sqrt_ratio: price.sqrt_ratio,
-                                liquidity_delta: i129 { mag: order.liquidity, sign: true },
-                                sqrt_ratio_lower: math.tick_to_sqrt_ratio(*request.order_key.tick),
-                                sqrt_ratio_upper: math
-                                    .tick_to_sqrt_ratio(
-                                        *request.order_key.tick
-                                            + i129 { mag: LIMIT_ORDER_TICK_SPACING, sign: false }
-                                    )
-                            );
+                        (
+                            0,
+                            math
+                                .amount1_delta(
+                                    sqrt_ratio_a,
+                                    sqrt_ratio_b,
+                                    liquidity: order.liquidity,
+                                    round_up: false
+                                )
+                        )
+                    };
 
-                        result
-                            .append(
-                                GetOrderInfoResult {
-                                    state: order,
-                                    executed: false,
-                                    amount0: delta.amount0.mag,
-                                    amount1: delta.amount1.mag
-                                }
-                            );
-                    }
-                };
+                    result
+                        .append(
+                            GetOrderInfoResult { state: order, executed: true, amount0, amount1 }
+                        );
+                } else {
+                    let delta = math
+                        .liquidity_delta_to_amount_delta(
+                            sqrt_ratio: price.sqrt_ratio,
+                            liquidity_delta: i129 { mag: order.liquidity, sign: true },
+                            sqrt_ratio_lower: math.tick_to_sqrt_ratio(*request.order_key.tick),
+                            sqrt_ratio_upper: math
+                                .tick_to_sqrt_ratio(
+                                    *request.order_key.tick
+                                        + i129 { mag: LIMIT_ORDER_TICK_SPACING, sign: false }
+                                )
+                        );
+
+                    result
+                        .append(
+                            GetOrderInfoResult {
+                                state: order,
+                                executed: false,
+                                amount0: delta.amount0.mag,
+                                amount1: delta.amount1.mag
+                            }
+                        );
+                }
+            };
 
             result.span()
         }

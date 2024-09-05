@@ -3,13 +3,12 @@ name = "ekubo_limit_orders_extension"
 version = "0.1.0"
 description = "An extension for limit orders on Ekubo Protocol"
 homepage = "https://ekubo.org"
-cairo-version = "2.6.3"
-edition = '2023_11'
+cairo-version = "2.8.0"
+edition = '2024_07'
 
 [dependencies]
 ekubo = { git = "https://github.com/ekuboprotocol/abis" }
-snforge_std = { git = "https://github.com/foundry-rs/starknet-foundry" }
-starknet = "=2.6.3"
+starknet = ">=2.7.0"
 
 [tool.fmt]
 sort-module-level-items = true
@@ -21,4 +20,8 @@ casm = true
 [[tool.snforge.fork]]
 name = "mainnet"
 url = "https://free-rpc.nethermind.io/mainnet-juno"
-block_id.tag = "Latest"
+block_id.number = "695165"
+
+[dev-dependencies]
+snforge_std = { git = "https://github.com/foundry-rs/starknet-foundry.git", tag = "v0.30.0" }
+assert_macros = "2.8.0"

@@ -1,31 +1,14 @@
-use core::num::traits::{Zero};
-use core::option::{OptionTrait};
-use core::traits::{TryInto};
-use ekubo::interfaces::core::{
-    ICoreDispatcherTrait, ICoreDispatcher, IExtensionDispatcher, IExtensionDispatcherTrait
-};
-use ekubo::interfaces::mathlib::{IMathLibDispatcher};
-use ekubo::interfaces::positions::{IPositionsDispatcher, IPositionsDispatcherTrait};
-use ekubo::interfaces::router::{IRouterDispatcher, IRouterDispatcherTrait, RouteNode, TokenAmount};
-use ekubo::types::bounds::{Bounds};
+use ekubo::interfaces::core::{ICoreDispatcherTrait, ICoreDispatcher, IExtensionDispatcher};
+use ekubo::interfaces::positions::{IPositionsDispatcher};
+use ekubo::interfaces::router::{IRouterDispatcher};
 use ekubo::types::call_points::{CallPoints};
-use ekubo::types::i129::{i129};
-use ekubo::types::keys::{PoolKey, PositionKey};
-use ekubo_limit_orders_extension::limit_orders::{
-    ILimitOrdersDispatcher, ILimitOrdersDispatcherTrait, LimitOrders
-};
-use ekubo_limit_orders_extension::test_token::{TestToken, IERC20Dispatcher, IERC20DispatcherTrait};
-use snforge_std::{
-    declare, ContractClassTrait, cheat_caller_address, cheat_block_timestamp, CheatSpan,
-    ContractClass
-};
-use starknet::{
-    get_contract_address, get_block_timestamp, contract_address_const,
-    storage_access::{StorePacking}, syscalls::{deploy_syscall}, ContractAddress
-};
+use ekubo::types::keys::{PoolKey};
+use ekubo_limit_orders_extension::test_token::{IERC20Dispatcher};
+use snforge_std::{declare, DeclareResultTrait, ContractClassTrait, ContractClass};
+use starknet::{get_contract_address, contract_address_const, ContractAddress};
 
 fn deploy_token(
-    class: ContractClass, recipient: ContractAddress, amount: u256
+    class: @ContractClass, recipient: ContractAddress, amount: u256
 ) -> IERC20Dispatcher {
     let (contract_address, _) = class
         .deploy(@array![recipient.into(), amount.low.into(), amount.high.into()])
@@ -35,7 +18,7 @@ fn deploy_token(
 }
 
 fn deploy_limit_orders(core: ICoreDispatcher) -> IExtensionDispatcher {
-    let contract = declare("LimitOrders").unwrap();
+    let contract = declare("LimitOrders").unwrap().contract_class();
     let (contract_address, _) = contract
         .deploy(@array![get_contract_address().into(), core.contract_address.into(),])
         .expect('Deploy failed');
@@ -69,7 +52,7 @@ fn router() -> IRouterDispatcher {
 
 fn setup(starting_balance: u256, fee: u128, tick_spacing: u128) -> PoolKey {
     let limit_orders = deploy_limit_orders(ekubo_core());
-    let token_class = declare("TestToken").unwrap();
+    let token_class = declare("TestToken").unwrap().contract_class();
     let owner = get_contract_address();
     let (tokenA, tokenB) = (
         deploy_token(token_class, owner, starting_balance),
