@@ -1,12 +1,14 @@
 use ekubo::interfaces::core::{ICoreDispatcherTrait, ICoreDispatcher, IExtensionDispatcher};
 use ekubo::interfaces::positions::{IPositionsDispatcher};
-use ekubo::interfaces::router::{IRouterDispatcher};
+use ekubo::interfaces::router::{IRouterDispatcher, IRouterDispatcherTrait, RouteNode, TokenAmount};
+use ekubo::interfaces::mathlib::{dispatcher as mathlib, IMathLibDispatcherTrait};
 use ekubo::types::call_points::{CallPoints};
 use ekubo::types::i129::{i129};
 use ekubo::types::keys::{PoolKey};
+use ekubo::types::delta::{Delta};
 use ekubo_limit_orders_extension::limit_orders::{
     OrderKey, GetOrderInfoRequest, GetOrderInfoResult, ILimitOrdersDispatcher,
-    ILimitOrdersDispatcherTrait, OrderState
+    ILimitOrdersDispatcherTrait, OrderState, LimitOrders::LIMIT_ORDER_TICK_SPACING
 };
 use ekubo_limit_orders_extension::limit_orders_test_periphery::{
     ILimitOrdersTestPeripheryDispatcher, ILimitOrdersTestPeripheryDispatcherTrait
@@ -14,6 +16,7 @@ use ekubo_limit_orders_extension::limit_orders_test_periphery::{
 use ekubo_limit_orders_extension::test_token::{IERC20Dispatcher, IERC20DispatcherTrait};
 use snforge_std::{declare, DeclareResultTrait, ContractClassTrait, ContractClass};
 use starknet::{get_contract_address, contract_address_const, ContractAddress};
+use core::num::traits::{Zero};
 
 fn deploy_token(
     class: @ContractClass, recipient: ContractAddress, amount: u256
@@ -69,16 +72,14 @@ fn router() -> IRouterDispatcher {
     }
 }
 
-fn setup(
-    starting_balance: u256, fee: u128, tick_spacing: u128
-) -> (PoolKey, ILimitOrdersTestPeripheryDispatcher) {
+fn setup() -> (PoolKey, ILimitOrdersTestPeripheryDispatcher) {
     let limit_orders = deploy_limit_orders(ekubo_core());
     let periphery = deploy_limit_orders_test_periphery(ekubo_core(), limit_orders);
     let token_class = declare("TestToken").unwrap().contract_class();
     let owner = get_contract_address();
     let (tokenA, tokenB) = (
-        deploy_token(token_class, owner, starting_balance),
-        deploy_token(token_class, owner, starting_balance)
+        deploy_token(token_class, owner, 0xffffffffffffffffffffffffffffffff),
+        deploy_token(token_class, owner, 0xffffffffffffffffffffffffffffffff)
     );
     let (token0, token1) = if (tokenA.contract_address < tokenB.contract_address) {
         (tokenA, tokenB)
@@ -89,8 +90,8 @@ fn setup(
     let pool_key = PoolKey {
         token0: token0.contract_address,
         token1: token1.contract_address,
-        fee: fee,
-        tick_spacing: tick_spacing,
+        fee: 0,
+        tick_spacing: LIMIT_ORDER_TICK_SPACING,
         extension: limit_orders.contract_address,
     };
 
@@ -100,7 +101,7 @@ fn setup(
 #[test]
 #[fork("mainnet")]
 fn test_constructor_sets_call_points() {
-    let (pool_key, _) = setup(starting_balance: 1000, fee: 0, tick_spacing: 100);
+    let (pool_key, _) = setup();
     assert_eq!(
         ekubo_core().get_call_points(pool_key.extension),
         CallPoints {
@@ -116,15 +117,23 @@ fn test_constructor_sets_call_points() {
     );
 }
 
+
 #[test]
 #[fork("mainnet")]
-fn test_can_place_order() {
-    let starting_balance = 1_000_000_000_000_000;
-    let (pool_key, periphery) = setup(
-        starting_balance: starting_balance, fee: 0, tick_spacing: 100
-    );
+fn test_pool_is_not_initialized() {
+    let (pool_key, _) = setup();
+    let pool_price = ekubo_core().get_pool_price(pool_key);
+
+    assert_eq!(pool_price.sqrt_ratio, Zero::zero());
+    assert_eq!(pool_price.tick, Zero::zero());
+}
+
+#[test]
+#[fork("mainnet")]
+fn test_place_order_and_fully_execute() {
+    let (pool_key, periphery) = setup();
     let sell_token = IERC20Dispatcher { contract_address: pool_key.token0 };
-    sell_token.transfer(periphery.contract_address, starting_balance);
+    sell_token.transfer(periphery.contract_address, 64);
     let salt = 0_felt252;
     let order_key = OrderKey {
         token0: pool_key.token0, token1: pool_key.token1, tick: i129 { mag: 0, sign: false }
@@ -144,6 +153,44 @@ fn test_can_place_order() {
                 executed: false,
                 amount0: 63,
                 amount1: 0
+            }
+        ]
+            .span()
+    );
+    let pool_price = ekubo_core().get_pool_price(pool_key);
+    assert_eq!(pool_price.sqrt_ratio, u256 { low: 0, high: 1 });
+    assert_eq!(pool_price.tick, i129 { mag: 0, sign: false });
+
+    // swap in 65 token1 to execute the order
+    let buy_token = IERC20Dispatcher { contract_address: pool_key.token1 };
+    buy_token.transfer(router().contract_address, 65);
+    assert_eq!(
+        router()
+            .swap(
+                node: RouteNode {
+                    pool_key,
+                    sqrt_ratio_limit: mathlib().tick_to_sqrt_ratio(i129 { mag: 128, sign: false }),
+                    skip_ahead: 0
+                },
+                token_amount: TokenAmount {
+                    token: pool_key.token1, amount: i129 { mag: 65, sign: false }
+                }
+            ),
+        Delta { amount0: i129 { mag: 63, sign: true }, amount1: i129 { mag: 65, sign: false } }
+    );
+
+    assert_eq!(
+        extension
+            .get_order_infos(
+                array![GetOrderInfoRequest { owner: periphery.contract_address, salt, order_key }]
+                    .span()
+            ),
+        array![
+            GetOrderInfoResult {
+                state: OrderState { ticks_crossed_at_create: 1, liquidity: 1000000 },
+                executed: true,
+                amount0: 0,
+                amount1: 64,
             }
         ]
             .span()
