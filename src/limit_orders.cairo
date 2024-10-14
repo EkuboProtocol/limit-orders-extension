@@ -2,21 +2,22 @@ use core::traits::{Into, TryInto};
 use ekubo::types::i129::{i129, i129Trait};
 use starknet::{ContractAddress, storage_access::{StorePacking}};
 
-#[derive(Drop, Copy, Serde, Hash)]
+#[derive(Drop, Copy, Serde, Hash, PartialEq, Debug)]
 pub struct OrderKey {
     // The first token sorted by address
     pub token0: ContractAddress,
     // The second token sorted by address
     pub token1: ContractAddress,
-    // The price at which the token should be bought/sold. Must be a multiple of 100. If even,
+    // The price at which the token should be bought/sold. Must be a multiple of tick spacing.
+    // If the specified tick is evenly divisible by 2 * tick_spacing, it implies that the order is
     // selling token1.
     pub tick: i129,
 }
 
-// State of a particular order, stored separately per owner + salt + order key
-#[derive(Drop, Copy, Serde, PartialEq)]
-pub struct OrderState {
-    // The number of ticks crossed when this order was created
+// State of a particular order, stored separately per (owner, salt, order key)
+#[derive(Drop, Copy, Serde, PartialEq, Debug)]
+pub(crate) struct OrderState {
+    // The total number of initialized ticks that the pool has crossed when this order was created
     pub ticks_crossed_at_create: u64,
     // How much liquidity was deposited for this order
     pub liquidity: u128,
@@ -37,10 +38,10 @@ impl OrderStateStorePacking of StorePacking<OrderState, felt252> {
 
 // The state of the pool as it was last seen
 #[derive(Drop, Copy, Serde, PartialEq)]
-pub struct PoolState {
-    // the number of initialized ticks that have been crossed, minus 1
+pub(crate) struct PoolState {
+    // The number of times this pool has crossed an initialized tick plus one
     pub ticks_crossed: u64,
-    // the last tick that was seen for the pool
+    // The last tick that was seen for the pool
     pub last_tick: i129,
 }
 
@@ -74,16 +75,16 @@ impl PoolStateStorePacking of StorePacking<PoolState, felt252> {
     }
 }
 
-#[derive(Drop, Copy, Serde)]
+#[derive(Drop, Copy, Serde, PartialEq, Debug)]
 pub struct GetOrderInfoRequest {
     pub owner: ContractAddress,
     pub salt: felt252,
     pub order_key: OrderKey,
 }
 
-#[derive(Drop, Copy, Serde)]
+#[derive(Drop, Copy, Serde, PartialEq, Debug)]
 pub struct GetOrderInfoResult {
-    pub state: OrderState,
+    pub(crate) state: OrderState,
     pub executed: bool,
     pub amount0: u128,
     pub amount1: u128,
@@ -93,17 +94,17 @@ pub struct GetOrderInfoResult {
 // the given `buy_token` at the specified tick.
 #[derive(Drop, Copy, Serde)]
 pub struct PlaceOrderForwardCallbackData {
-    salt: felt252,
-    order_key: OrderKey,
-    liquidity: u128,
+    pub salt: felt252,
+    pub order_key: OrderKey,
+    pub liquidity: u128,
 }
 
 // Pass through to `Core#forward` to closes an order with the given token ID, returning the amount
 // of token0 and token1 to the recipient
 #[derive(Drop, Copy, Serde)]
 pub struct CloseOrderForwardCallbackData {
-    salt: felt252,
-    order_key: OrderKey,
+    pub salt: felt252,
+    pub order_key: OrderKey,
 }
 
 // Pass to `Core#forward` to interact with limit orders
@@ -115,7 +116,7 @@ pub enum ForwardCallbackData {
 
 #[derive(Drop, Copy, Serde)]
 pub enum ForwardCallbackResult {
-    // The amount that must be paid to cover the order
+    // Returns the amount that must be paid to cover the order
     PlaceOrder: u128,
     // The amount of token0 and token1 received for closing the order
     CloseOrder: (u128, u128)
@@ -159,8 +160,8 @@ pub mod LimitOrders {
         CloseOrderForwardCallbackData, ForwardCallbackResult
     };
 
-    pub const LIMIT_ORDER_TICK_SPACING: u128 = 100;
-    pub const DOUBLE_LIMIT_ORDER_TICK_SPACING: u128 = 200;
+    pub const LIMIT_ORDER_TICK_SPACING: u128 = 128;
+    pub const DOUBLE_LIMIT_ORDER_TICK_SPACING: u128 = 256;
 
     #[abi(embed_v0)]
     impl Clear = ekubo::components::clear::ClearImpl<ContractState>;
@@ -251,14 +252,14 @@ pub mod LimitOrders {
             ref self: ContractState, caller: ContractAddress, pool_key: PoolKey, initial_tick: i129
         ) {
             // This entrypoint is not called if the limit order extension initializes the pool. Only
-            // the limit order extension can create pools.
-            panic!("ONLY_FROM_PLACE_ORDER");
+            // the limit order extension can create pools using this extension.
+            panic!("Only from place_order");
         }
 
         fn after_initialize_pool(
             ref self: ContractState, caller: ContractAddress, pool_key: PoolKey, initial_tick: i129
         ) {
-            panic!("NOT_USED");
+            panic!("Not used");
         }
 
         fn before_swap(
@@ -267,9 +268,8 @@ pub mod LimitOrders {
             pool_key: PoolKey,
             params: SwapParameters
         ) {
-            panic!("NOT_USED");
+            panic!("Not used");
         }
-
 
         fn after_swap(
             ref self: ContractState,
@@ -291,9 +291,8 @@ pub mod LimitOrders {
             pool_key: PoolKey,
             params: UpdatePositionParameters
         ) {
-            // Only this contract can create positions on limit order pools, and the extension will
-            // not be called in that case, so always revert
-            panic!("ONLY_LIMIT_ORDERS");
+            // pools with this extension may only contain limit orders, to simplify routing
+            panic!("Only limit orders");
         }
 
         fn after_update_position(
@@ -303,7 +302,7 @@ pub mod LimitOrders {
             params: UpdatePositionParameters,
             delta: Delta
         ) {
-            panic!("NOT_USED");
+            panic!("Not used");
         }
 
         fn before_collect_fees(
@@ -313,7 +312,7 @@ pub mod LimitOrders {
             salt: felt252,
             bounds: Bounds
         ) {
-            panic!("NOT_USED");
+            panic!("Not used");
         }
         fn after_collect_fees(
             ref self: ContractState,
@@ -323,7 +322,7 @@ pub mod LimitOrders {
             bounds: Bounds,
             delta: Delta
         ) {
-            panic!("NOT_USED");
+            panic!("Not used");
         }
     }
 
@@ -474,31 +473,31 @@ pub mod LimitOrders {
 
                     let pool_key: PoolKey = order_key.into();
 
-                    // check the price is on the right side of the order tick
-                    let price = core.get_pool_price(pool_key);
-
                     let state_entry = self.pools.entry((order_key.token0, order_key.token1));
                     let order_entry = self.orders.entry((original_locker, salt, order_key));
 
                     assert(order_entry.read().liquidity.is_zero(), 'Order already exists');
 
-                    // the first order initializes the pool just next to where the order is
-                    // placed
-                    if (price.sqrt_ratio.is_zero()) {
+                    let mut pool_state = state_entry.read();
+
+                    // the ticks crossed is zero IFF the pool is not initialized
+                    if (pool_state.ticks_crossed.is_zero()) {
                         let initial_tick = if is_selling_token1 {
                             order_key.tick + i129 { mag: LIMIT_ORDER_TICK_SPACING, sign: false }
                         } else {
                             order_key.tick
                         };
 
-                        state_entry.write(PoolState { ticks_crossed: 1, last_tick: initial_tick });
+                        pool_state = PoolState { ticks_crossed: 1, last_tick: initial_tick };
+
+                        state_entry.write(pool_state);
                         core.initialize_pool(order_key.into(), initial_tick);
                     }
 
                     order_entry
                         .write(
                             OrderState {
-                                ticks_crossed_at_create: state_entry.read().ticks_crossed, liquidity
+                                ticks_crossed_at_create: pool_state.ticks_crossed, liquidity
                             }
                         );
 

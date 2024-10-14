@@ -2,8 +2,16 @@ use ekubo::interfaces::core::{ICoreDispatcherTrait, ICoreDispatcher, IExtensionD
 use ekubo::interfaces::positions::{IPositionsDispatcher};
 use ekubo::interfaces::router::{IRouterDispatcher};
 use ekubo::types::call_points::{CallPoints};
+use ekubo::types::i129::{i129};
 use ekubo::types::keys::{PoolKey};
-use ekubo_limit_orders_extension::test_token::{IERC20Dispatcher};
+use ekubo_limit_orders_extension::limit_orders::{
+    OrderKey, GetOrderInfoRequest, GetOrderInfoResult, ILimitOrdersDispatcher,
+    ILimitOrdersDispatcherTrait, OrderState
+};
+use ekubo_limit_orders_extension::limit_orders_test_periphery::{
+    ILimitOrdersTestPeripheryDispatcher, ILimitOrdersTestPeripheryDispatcherTrait
+};
+use ekubo_limit_orders_extension::test_token::{IERC20Dispatcher, IERC20DispatcherTrait};
 use snforge_std::{declare, DeclareResultTrait, ContractClassTrait, ContractClass};
 use starknet::{get_contract_address, contract_address_const, ContractAddress};
 
@@ -20,10 +28,21 @@ fn deploy_token(
 fn deploy_limit_orders(core: ICoreDispatcher) -> IExtensionDispatcher {
     let contract = declare("LimitOrders").unwrap().contract_class();
     let (contract_address, _) = contract
-        .deploy(@array![get_contract_address().into(), core.contract_address.into(),])
+        .deploy(@array![get_contract_address().into(), core.contract_address.into()])
         .expect('Deploy failed');
 
     IExtensionDispatcher { contract_address }
+}
+
+fn deploy_limit_orders_test_periphery(
+    core: ICoreDispatcher, limit_orders: IExtensionDispatcher
+) -> ILimitOrdersTestPeripheryDispatcher {
+    let contract = declare("LimitOrdersTestPeriphery").unwrap().contract_class();
+    let (contract_address, _) = contract
+        .deploy(@array![core.contract_address.into(), limit_orders.contract_address.into()])
+        .expect('Deploy failed');
+
+    ILimitOrdersTestPeripheryDispatcher { contract_address }
 }
 
 fn ekubo_core() -> ICoreDispatcher {
@@ -50,8 +69,11 @@ fn router() -> IRouterDispatcher {
     }
 }
 
-fn setup(starting_balance: u256, fee: u128, tick_spacing: u128) -> PoolKey {
+fn setup(
+    starting_balance: u256, fee: u128, tick_spacing: u128
+) -> (PoolKey, ILimitOrdersTestPeripheryDispatcher) {
     let limit_orders = deploy_limit_orders(ekubo_core());
+    let periphery = deploy_limit_orders_test_periphery(ekubo_core(), limit_orders);
     let token_class = declare("TestToken").unwrap().contract_class();
     let owner = get_contract_address();
     let (tokenA, tokenB) = (
@@ -72,13 +94,13 @@ fn setup(starting_balance: u256, fee: u128, tick_spacing: u128) -> PoolKey {
         extension: limit_orders.contract_address,
     };
 
-    pool_key
+    (pool_key, periphery)
 }
 
 #[test]
 #[fork("mainnet")]
 fn test_constructor_sets_call_points() {
-    let pool_key = setup(starting_balance: 1000, fee: 0, tick_spacing: 100);
+    let (pool_key, _) = setup(starting_balance: 1000, fee: 0, tick_spacing: 100);
     assert_eq!(
         ekubo_core().get_call_points(pool_key.extension),
         CallPoints {
@@ -91,6 +113,40 @@ fn test_constructor_sets_call_points() {
             before_collect_fees: false,
             after_collect_fees: false,
         }
+    );
+}
+
+#[test]
+#[fork("mainnet")]
+fn test_can_place_order() {
+    let starting_balance = 1_000_000_000_000_000;
+    let (pool_key, periphery) = setup(
+        starting_balance: starting_balance, fee: 0, tick_spacing: 100
+    );
+    let sell_token = IERC20Dispatcher { contract_address: pool_key.token0 };
+    sell_token.transfer(periphery.contract_address, starting_balance);
+    let salt = 0_felt252;
+    let order_key = OrderKey {
+        token0: pool_key.token0, token1: pool_key.token1, tick: i129 { mag: 0, sign: false }
+    };
+    let liquidity = 1_000_000_u128;
+    assert_eq!(periphery.place_order(salt, order_key, liquidity), 64);
+    let extension = ILimitOrdersDispatcher { contract_address: pool_key.extension };
+    assert_eq!(
+        extension
+            .get_order_infos(
+                array![GetOrderInfoRequest { owner: periphery.contract_address, salt, order_key }]
+                    .span()
+            ),
+        array![
+            GetOrderInfoResult {
+                state: OrderState { ticks_crossed_at_create: 1, liquidity: 1000000 },
+                executed: false,
+                amount0: 63,
+                amount1: 0
+            }
+        ]
+            .span()
     );
 }
 
