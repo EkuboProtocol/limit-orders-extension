@@ -130,7 +130,7 @@ fn test_pool_is_not_initialized() {
 
 #[test]
 #[fork("mainnet")]
-fn test_place_order_and_fully_execute() {
+fn test_place_order_and_fully_execute_sell_token0() {
     let (pool_key, periphery) = setup();
     let sell_token = IERC20Dispatcher { contract_address: pool_key.token0 };
     sell_token.transfer(periphery.contract_address, 64);
@@ -161,9 +161,8 @@ fn test_place_order_and_fully_execute() {
     assert_eq!(pool_price.sqrt_ratio, u256 { low: 0, high: 1 });
     assert_eq!(pool_price.tick, i129 { mag: 0, sign: false });
 
-    // swap in 65 token1 to execute the order
     let buy_token = IERC20Dispatcher { contract_address: pool_key.token1 };
-    buy_token.transfer(router().contract_address, 65);
+    buy_token.transfer(router().contract_address, 100);
     assert_eq!(
         router()
             .swap(
@@ -173,7 +172,7 @@ fn test_place_order_and_fully_execute() {
                     skip_ahead: 0
                 },
                 token_amount: TokenAmount {
-                    token: pool_key.token1, amount: i129 { mag: 65, sign: false }
+                    token: pool_key.token1, amount: i129 { mag: 100, sign: false }
                 }
             ),
         Delta { amount0: i129 { mag: 63, sign: true }, amount1: i129 { mag: 65, sign: false } }
@@ -195,5 +194,81 @@ fn test_place_order_and_fully_execute() {
         ]
             .span()
     );
+
+    assert_eq!(periphery.close_order(salt, order_key), (0, 64));
+}
+
+
+#[test]
+#[fork("mainnet")]
+fn test_place_order_and_fully_execute_sell_token1() {
+    let (pool_key, periphery) = setup();
+    let sell_token = IERC20Dispatcher { contract_address: pool_key.token1 };
+    sell_token.transfer(periphery.contract_address, 65);
+    let salt = 0_felt252;
+    let order_key = OrderKey {
+        token0: pool_key.token0,
+        token1: pool_key.token1,
+        tick: i129 { mag: LIMIT_ORDER_TICK_SPACING, sign: false }
+    };
+    let liquidity = 1_000_000_u128;
+    assert_eq!(periphery.place_order(salt, order_key, liquidity), 65);
+    let extension = ILimitOrdersDispatcher { contract_address: pool_key.extension };
+    assert_eq!(
+        extension
+            .get_order_infos(
+                array![GetOrderInfoRequest { owner: periphery.contract_address, salt, order_key }]
+                    .span()
+            ),
+        array![
+            GetOrderInfoResult {
+                state: OrderState { ticks_crossed_at_create: 1, liquidity: 1000000 },
+                executed: false,
+                amount0: 0,
+                amount1: 64
+            }
+        ]
+            .span()
+    );
+    let pool_price = ekubo_core().get_pool_price(pool_key);
+    assert_eq!(
+        pool_price.sqrt_ratio,
+        mathlib().tick_to_sqrt_ratio(i129 { mag: LIMIT_ORDER_TICK_SPACING * 2, sign: false })
+    );
+    assert_eq!(pool_price.tick, i129 { mag: LIMIT_ORDER_TICK_SPACING * 2, sign: false });
+
+    let buy_token = IERC20Dispatcher { contract_address: pool_key.token0 };
+    buy_token.transfer(router().contract_address, 100);
+    assert_eq!(
+        router()
+            .swap(
+                node: RouteNode {
+                    pool_key, sqrt_ratio_limit: u256 { low: 0, high: 1 }, skip_ahead: 0
+                },
+                token_amount: TokenAmount {
+                    token: buy_token.contract_address, amount: i129 { mag: 100, sign: false }
+                }
+            ),
+        Delta { amount0: i129 { mag: 64, sign: false }, amount1: i129 { mag: 64, sign: true } }
+    );
+
+    assert_eq!(
+        extension
+            .get_order_infos(
+                array![GetOrderInfoRequest { owner: periphery.contract_address, salt, order_key }]
+                    .span()
+            ),
+        array![
+            GetOrderInfoResult {
+                state: OrderState { ticks_crossed_at_create: 1, liquidity: 1000000 },
+                executed: true,
+                amount0: 63,
+                amount1: 0
+            }
+        ]
+            .span()
+    );
+
+    assert_eq!(periphery.close_order(salt, order_key), (63, 0));
 }
 
