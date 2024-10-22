@@ -179,8 +179,8 @@ pub mod LimitOrders {
     struct Storage {
         core: ICoreDispatcher,
         pools: Map<(ContractAddress, ContractAddress), PoolState>,
-        orders: Map<(ContractAddress, felt252, OrderKey), OrderState>,
         ticks_crossed_last_crossing: Map<(ContractAddress, ContractAddress), Map<i129, u64>>,
+        orders: Map<(ContractAddress, felt252, OrderKey), OrderState>,
         #[substorage(v0)]
         upgradeable: upgradeable_component::Storage,
         #[substorage(v0)]
@@ -204,12 +204,6 @@ pub mod LimitOrders {
                     after_collect_fees: false,
                 }
             );
-    }
-
-    #[derive(Serde, Copy, Drop)]
-    struct HandleAfterSwapCallbackData {
-        pool_key: PoolKey,
-        skip_ahead: u128,
     }
 
     #[derive(starknet::Event, Drop)]
@@ -280,9 +274,7 @@ pub mod LimitOrders {
         ) {
             let core = self.core.read();
 
-            call_core_with_callback::<
-                HandleAfterSwapCallbackData, ()
-            >(core, @HandleAfterSwapCallbackData { pool_key, skip_ahead: params.skip_ahead });
+            call_core_with_callback::<(PoolKey, u128), ()>(core, @(pool_key, params.skip_ahead));
         }
 
         fn before_update_position(
@@ -342,38 +334,31 @@ pub mod LimitOrders {
     impl LockedImpl of ILocker<ContractState> {
         fn locked(ref self: ContractState, id: u32, data: Span<felt252>) -> Span<felt252> {
             let core = self.core.read();
+            let (pool_key, skip_ahead) = consume_callback_data::<(PoolKey, u128)>(core, data);
 
-            let after_swap = consume_callback_data::<HandleAfterSwapCallbackData>(core, data);
-            let price_after_swap = core.get_pool_price(after_swap.pool_key);
-            let state_entry = self
-                .pools
-                .entry((after_swap.pool_key.token0, after_swap.pool_key.token1));
+            let tick_after_swap = core.get_pool_price(pool_key).tick;
+            let state_entry = self.pools.entry((pool_key.token0, pool_key.token1));
             let state = state_entry.read();
             let mut ticks_crossed = state.ticks_crossed;
 
-            let pool_crossed_entry = self
+            let pool_ticks_crossed_entry = self
                 .ticks_crossed_last_crossing
-                .entry((after_swap.pool_key.token0, after_swap.pool_key.token1));
+                .entry((pool_key.token0, pool_key.token1));
 
-            if (price_after_swap.tick != state.last_tick) {
-                let price_increasing = price_after_swap.tick > state.last_tick;
+            if (tick_after_swap != state.last_tick) {
+                let this_address = get_contract_address();
+                let price_increasing = tick_after_swap > state.last_tick;
                 let mut tick_current = state.last_tick;
                 let mut save_amount: u128 = 0;
 
                 loop {
                     let (next_tick, is_initialized) = if price_increasing {
-                        core
-                            .next_initialized_tick(
-                                after_swap.pool_key, tick_current, after_swap.skip_ahead
-                            )
+                        core.next_initialized_tick(pool_key, tick_current, skip_ahead)
                     } else {
-                        core
-                            .prev_initialized_tick(
-                                after_swap.pool_key, tick_current, after_swap.skip_ahead
-                            )
+                        core.prev_initialized_tick(pool_key, tick_current, skip_ahead)
                     };
 
-                    if ((next_tick > price_after_swap.tick) == price_increasing) {
+                    if ((next_tick > tick_after_swap) == price_increasing) {
                         break ();
                     };
 
@@ -395,13 +380,12 @@ pub mod LimitOrders {
 
                         let position_data = core
                             .get_position(
-                                after_swap.pool_key,
-                                PositionKey { salt: 0, owner: get_contract_address(), bounds }
+                                pool_key, PositionKey { salt: 0, owner: this_address, bounds }
                             );
 
                         let delta = core
                             .update_position(
-                                after_swap.pool_key,
+                                pool_key,
                                 UpdatePositionParameters {
                                     salt: 0,
                                     bounds,
@@ -418,7 +402,7 @@ pub mod LimitOrders {
                                 delta.amount0.mag
                             };
                         ticks_crossed += 1;
-                        pool_crossed_entry.write(next_tick, ticks_crossed);
+                        pool_ticks_crossed_entry.write(next_tick, ticks_crossed);
                     };
 
                     tick_current =
@@ -433,11 +417,11 @@ pub mod LimitOrders {
                     core
                         .save(
                             SavedBalanceKey {
-                                owner: get_contract_address(),
+                                owner: this_address,
                                 token: if price_increasing {
-                                    after_swap.pool_key.token1
+                                    pool_key.token1
                                 } else {
-                                    after_swap.pool_key.token0
+                                    pool_key.token0
                                 },
                                 salt: 0,
                             },
@@ -445,7 +429,7 @@ pub mod LimitOrders {
                         );
                 }
 
-                state_entry.write(PoolState { ticks_crossed, last_tick: price_after_swap.tick });
+                state_entry.write(PoolState { ticks_crossed, last_tick: tick_after_swap });
             }
 
             array![].span()
@@ -464,7 +448,7 @@ pub mod LimitOrders {
                 ForwardCallbackData::PlaceOrder(place_order) => {
                     let PlaceOrderForwardCallbackData { salt, order_key, liquidity } = place_order;
 
-                    assert(liquidity > 0, 'SELL_AMOUNT_TOO_SMALL');
+                    assert(liquidity > 0, 'Liquidity must be non-zero');
 
                     let is_selling_token1 = (order_key.tick.mag % DOUBLE_LIMIT_ORDER_TICK_SPACING)
                         .is_non_zero();
@@ -516,27 +500,24 @@ pub mod LimitOrders {
                             }
                         );
 
-                    let (pay_amount, other_is_zero) = if is_selling_token1 {
-                        (delta.amount1.mag, delta.amount0.is_zero())
+                    if is_selling_token1 {
+                        assert(delta.amount0.is_zero(), 'TICK_WRONG_SIDE');
+                        ForwardCallbackResult::PlaceOrder(delta.amount1.mag)
                     } else {
-                        (delta.amount0.mag, delta.amount1.is_zero())
-                    };
-
-                    assert(other_is_zero, 'TICK_WRONG_SIDE');
-
-                    ForwardCallbackResult::PlaceOrder(pay_amount)
+                        assert(delta.amount1.is_zero(), 'TICK_WRONG_SIDE');
+                        ForwardCallbackResult::PlaceOrder(delta.amount0.mag)
+                    }
                 },
                 ForwardCallbackData::CloseOrder(close_order) => {
                     let CloseOrderForwardCallbackData { salt, order_key } = close_order;
 
-                    let owner = original_locker;
-                    let order = self.orders.read((owner, salt, order_key));
-                    assert(order.liquidity.is_non_zero(), 'INVALID_ORDER_KEY');
+                    let order = self.orders.read((original_locker, salt, order_key));
+                    assert(order.liquidity.is_non_zero(), 'Zero liquidity');
 
                     self
                         .orders
                         .write(
-                            (owner, salt, order_key),
+                            (original_locker, salt, order_key),
                             OrderState { liquidity: 0, ticks_crossed_at_create: 0 }
                         );
 

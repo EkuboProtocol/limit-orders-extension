@@ -1,11 +1,12 @@
+use core::num::traits::{Zero};
 use ekubo::interfaces::core::{ICoreDispatcherTrait, ICoreDispatcher, IExtensionDispatcher};
+use ekubo::interfaces::mathlib::{dispatcher as mathlib, IMathLibDispatcherTrait};
 use ekubo::interfaces::positions::{IPositionsDispatcher};
 use ekubo::interfaces::router::{IRouterDispatcher, IRouterDispatcherTrait, RouteNode, TokenAmount};
-use ekubo::interfaces::mathlib::{dispatcher as mathlib, IMathLibDispatcherTrait};
 use ekubo::types::call_points::{CallPoints};
+use ekubo::types::delta::{Delta};
 use ekubo::types::i129::{i129};
 use ekubo::types::keys::{PoolKey};
-use ekubo::types::delta::{Delta};
 use ekubo_limit_orders_extension::limit_orders::{
     OrderKey, GetOrderInfoRequest, GetOrderInfoResult, ILimitOrdersDispatcher,
     ILimitOrdersDispatcherTrait, OrderState, LimitOrders::LIMIT_ORDER_TICK_SPACING
@@ -16,7 +17,6 @@ use ekubo_limit_orders_extension::limit_orders_test_periphery::{
 use ekubo_limit_orders_extension::test_token::{IERC20Dispatcher, IERC20DispatcherTrait};
 use snforge_std::{declare, DeclareResultTrait, ContractClassTrait, ContractClass};
 use starknet::{get_contract_address, contract_address_const, ContractAddress};
-use core::num::traits::{Zero};
 
 fn deploy_token(
     class: @ContractClass, recipient: ContractAddress, amount: u256
@@ -130,6 +130,55 @@ fn test_pool_is_not_initialized() {
 
 #[test]
 #[fork("mainnet")]
+#[should_panic(expected: "Only from place_order")]
+fn test_pool_cannot_be_initialized_manually() {
+    let (pool_key, _) = setup();
+    ekubo_core().initialize_pool(pool_key, Zero::zero());
+}
+
+#[test]
+#[fork("mainnet")]
+#[should_panic(expected: ('Order already exists',))]
+fn test_cannot_place_two_orders_for_same_key() {
+    let (pool_key, periphery) = setup();
+    let sell_token = IERC20Dispatcher { contract_address: pool_key.token0 };
+    sell_token.transfer(periphery.contract_address, 64);
+    let salt = 0_felt252;
+    let order_key = OrderKey {
+        token0: pool_key.token0, token1: pool_key.token1, tick: i129 { mag: 0, sign: false }
+    };
+    let liquidity = 1_000_000_u128;
+    assert_eq!(periphery.place_order(salt, order_key, liquidity), 64);
+    periphery.place_order(salt, order_key, liquidity);
+}
+
+#[test]
+#[fork("mainnet")]
+#[should_panic(expected: ('Liquidity must be non-zero',))]
+fn test_cannot_place_order_for_zero_liquidity() {
+    let (pool_key, periphery) = setup();
+    let salt = 0_felt252;
+    let order_key = OrderKey {
+        token0: pool_key.token0, token1: pool_key.token1, tick: i129 { mag: 0, sign: false }
+    };
+    let liquidity = 0_u128;
+    periphery.place_order(salt, order_key, liquidity);
+}
+
+#[test]
+#[fork("mainnet")]
+#[should_panic(expected: ('Zero liquidity',))]
+fn test_cannot_close_order_without_liquidity() {
+    let (pool_key, periphery) = setup();
+    let salt = 0_felt252;
+    let order_key = OrderKey {
+        token0: pool_key.token0, token1: pool_key.token1, tick: i129 { mag: 0, sign: false }
+    };
+    periphery.close_order(salt, order_key);
+}
+
+#[test]
+#[fork("mainnet")]
 fn test_place_order_and_fully_execute_sell_token0() {
     let (pool_key, periphery) = setup();
     let sell_token = IERC20Dispatcher { contract_address: pool_key.token0 };
@@ -172,7 +221,7 @@ fn test_place_order_and_fully_execute_sell_token0() {
                     skip_ahead: 0
                 },
                 token_amount: TokenAmount {
-                    token: pool_key.token1, amount: i129 { mag: 100, sign: false }
+                    token: buy_token.contract_address, amount: i129 { mag: 100, sign: false }
                 }
             ),
         Delta { amount0: i129 { mag: 63, sign: true }, amount1: i129 { mag: 65, sign: false } }
@@ -272,3 +321,72 @@ fn test_place_order_and_fully_execute_sell_token1() {
     assert_eq!(periphery.close_order(salt, order_key), (63, 0));
 }
 
+
+#[test]
+#[fork("mainnet")]
+fn test_place_order_and_partially_execute_sell_token0() {
+    let (pool_key, periphery) = setup();
+    let sell_token = IERC20Dispatcher { contract_address: pool_key.token0 };
+    sell_token.transfer(periphery.contract_address, 64);
+    let salt = 0_felt252;
+    let order_key = OrderKey {
+        token0: pool_key.token0, token1: pool_key.token1, tick: i129 { mag: 0, sign: false }
+    };
+    let liquidity = 1_000_000_u128;
+    assert_eq!(periphery.place_order(salt, order_key, liquidity), 64);
+
+    let buy_token = IERC20Dispatcher { contract_address: pool_key.token1 };
+    buy_token.transfer(router().contract_address, 100);
+    assert_eq!(
+        router()
+            .swap(
+                node: RouteNode {
+                    pool_key,
+                    sqrt_ratio_limit: mathlib().tick_to_sqrt_ratio(i129 { mag: 64, sign: false }),
+                    skip_ahead: 0
+                },
+                token_amount: TokenAmount {
+                    token: buy_token.contract_address, amount: i129 { mag: 100, sign: false }
+                }
+            ),
+        Delta { amount0: i129 { mag: 31, sign: true }, amount1: i129 { mag: 33, sign: false } }
+    );
+
+    assert_eq!(periphery.close_order(salt, order_key), (31, 32));
+}
+
+
+#[test]
+#[fork("mainnet")]
+fn test_place_order_and_partially_execute_sell_token1() {
+    let (pool_key, periphery) = setup();
+    let sell_token = IERC20Dispatcher { contract_address: pool_key.token1 };
+    sell_token.transfer(periphery.contract_address, 65);
+    let salt = 0_felt252;
+    let order_key = OrderKey {
+        token0: pool_key.token0,
+        token1: pool_key.token1,
+        tick: i129 { mag: LIMIT_ORDER_TICK_SPACING, sign: false }
+    };
+    let liquidity = 1_000_000_u128;
+    assert_eq!(periphery.place_order(salt, order_key, liquidity), 65);
+
+    let buy_token = IERC20Dispatcher { contract_address: pool_key.token0 };
+    buy_token.transfer(router().contract_address, 100);
+    assert_eq!(
+        router()
+            .swap(
+                node: RouteNode {
+                    pool_key,
+                    sqrt_ratio_limit: mathlib().tick_to_sqrt_ratio(i129 { mag: 192, sign: false }),
+                    skip_ahead: 0
+                },
+                token_amount: TokenAmount {
+                    token: buy_token.contract_address, amount: i129 { mag: 100, sign: false }
+                }
+            ),
+        Delta { amount0: i129 { mag: 32, sign: false }, amount1: i129 { mag: 32, sign: true } }
+    );
+
+    assert_eq!(periphery.close_order(salt, order_key), (31, 32));
+}
