@@ -455,6 +455,22 @@ fn test_place_orders_only_one_executed_sell_token0() {
     assert_eq!(periphery.close_order(salt, order_key), (0, 64));
     // close the second one
     assert_eq!(periphery.close_order(salt + 1, order_key), (63, 0));
+
+    assert_eq!(
+        router()
+            .swap(
+                node: RouteNode {
+                    pool_key,
+                    sqrt_ratio_limit: mathlib()
+                        .tick_to_sqrt_ratio(i129 { mag: LIMIT_ORDER_TICK_SPACING, sign: false }),
+                    skip_ahead: 0
+                },
+                token_amount: TokenAmount {
+                    token: buy_token.contract_address, amount: i129 { mag: 100, sign: false }
+                }
+            ),
+        Zero::zero()
+    );
 }
 
 #[test]
@@ -504,7 +520,7 @@ fn test_place_orders_only_one_executed_sell_token1() {
                     token: sell_token.contract_address, amount: i129 { mag: 100, sign: false }
                 }
             ),
-        Delta { amount0: i129 { mag: 0, sign: true }, amount1: i129 { mag: 0, sign: false } }
+        Zero::zero()
     );
 
     // place another order after the first one executed
@@ -515,4 +531,20 @@ fn test_place_orders_only_one_executed_sell_token1() {
     assert_eq!(periphery.close_order(salt, order_key), (63, 0));
     // close the second one
     assert_eq!(periphery.close_order(salt + 1, order_key), (0, 64));
+
+    assert_eq!(
+        router()
+            .swap(
+                node: RouteNode {
+                    pool_key,
+                    sqrt_ratio_limit: mathlib()
+                        .tick_to_sqrt_ratio(i129 { mag: LIMIT_ORDER_TICK_SPACING, sign: false }),
+                    skip_ahead: 0
+                },
+                token_amount: TokenAmount {
+                    token: buy_token.contract_address, amount: i129 { mag: 100, sign: false }
+                }
+            ),
+        Zero::zero()
+    );
 }
