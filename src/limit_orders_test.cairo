@@ -342,7 +342,10 @@ fn test_place_order_and_partially_execute_sell_token0() {
             .swap(
                 node: RouteNode {
                     pool_key,
-                    sqrt_ratio_limit: mathlib().tick_to_sqrt_ratio(i129 { mag: 64, sign: false }),
+                    sqrt_ratio_limit: mathlib()
+                        .tick_to_sqrt_ratio(
+                            i129 { mag: LIMIT_ORDER_TICK_SPACING / 2, sign: false }
+                        ),
                     skip_ahead: 0
                 },
                 token_amount: TokenAmount {
@@ -378,7 +381,13 @@ fn test_place_order_and_partially_execute_sell_token1() {
             .swap(
                 node: RouteNode {
                     pool_key,
-                    sqrt_ratio_limit: mathlib().tick_to_sqrt_ratio(i129 { mag: 192, sign: false }),
+                    sqrt_ratio_limit: mathlib()
+                        .tick_to_sqrt_ratio(
+                            i129 {
+                                mag: LIMIT_ORDER_TICK_SPACING + (LIMIT_ORDER_TICK_SPACING / 2),
+                                sign: false
+                            }
+                        ),
                     skip_ahead: 0
                 },
                 token_amount: TokenAmount {
@@ -389,4 +398,119 @@ fn test_place_order_and_partially_execute_sell_token1() {
     );
 
     assert_eq!(periphery.close_order(salt, order_key), (31, 32));
+}
+
+
+#[test]
+#[fork("mainnet")]
+fn test_place_orders_only_one_executed_sell_token0() {
+    let (pool_key, periphery) = setup();
+    let sell_token = IERC20Dispatcher { contract_address: pool_key.token0 };
+    sell_token.transfer(periphery.contract_address, 64);
+    let salt = 0_felt252;
+    let order_key = OrderKey {
+        token0: pool_key.token0, token1: pool_key.token1, tick: i129 { mag: 0, sign: false }
+    };
+    let liquidity = 1_000_000_u128;
+    assert_eq!(periphery.place_order(salt, order_key, liquidity), 64);
+
+    let buy_token = IERC20Dispatcher { contract_address: pool_key.token1 };
+    buy_token.transfer(router().contract_address, 100);
+    assert_eq!(
+        router()
+            .swap(
+                node: RouteNode {
+                    pool_key,
+                    sqrt_ratio_limit: mathlib().tick_to_sqrt_ratio(i129 { mag: 128, sign: false }),
+                    skip_ahead: 0
+                },
+                token_amount: TokenAmount {
+                    token: buy_token.contract_address, amount: i129 { mag: 100, sign: false }
+                }
+            ),
+        Delta { amount0: i129 { mag: 63, sign: true }, amount1: i129 { mag: 65, sign: false } }
+    );
+    assert_eq!(
+        router()
+            .swap(
+                node: RouteNode {
+                    pool_key,
+                    sqrt_ratio_limit: mathlib().tick_to_sqrt_ratio(i129 { mag: 0, sign: false }),
+                    skip_ahead: 0
+                },
+                token_amount: TokenAmount {
+                    token: sell_token.contract_address, amount: i129 { mag: 100, sign: false }
+                }
+            ),
+        Delta { amount0: i129 { mag: 0, sign: true }, amount1: i129 { mag: 0, sign: false } }
+    );
+
+    // place another order after the first one executed
+    sell_token.transfer(periphery.contract_address, 64);
+    assert_eq!(periphery.place_order(salt + 1, order_key, liquidity), 64);
+
+    // close the first one
+    assert_eq!(periphery.close_order(salt, order_key), (0, 64));
+    // close the second one
+    assert_eq!(periphery.close_order(salt + 1, order_key), (63, 0));
+}
+
+#[test]
+#[fork("mainnet")]
+fn test_place_orders_only_one_executed_sell_token1() {
+    let (pool_key, periphery) = setup();
+    let sell_token = IERC20Dispatcher { contract_address: pool_key.token1 };
+    sell_token.transfer(periphery.contract_address, 65);
+    let salt = 0_felt252;
+    let order_key = OrderKey {
+        token0: pool_key.token0,
+        token1: pool_key.token1,
+        tick: i129 { mag: LIMIT_ORDER_TICK_SPACING, sign: false }
+    };
+    let liquidity = 1_000_000_u128;
+    assert_eq!(periphery.place_order(salt, order_key, liquidity), 65);
+
+    let buy_token = IERC20Dispatcher { contract_address: pool_key.token0 };
+    buy_token.transfer(router().contract_address, 100);
+    assert_eq!(
+        router()
+            .swap(
+                node: RouteNode {
+                    pool_key,
+                    sqrt_ratio_limit: mathlib()
+                        .tick_to_sqrt_ratio(i129 { mag: LIMIT_ORDER_TICK_SPACING, sign: false }),
+                    skip_ahead: 0
+                },
+                token_amount: TokenAmount {
+                    token: buy_token.contract_address, amount: i129 { mag: 100, sign: false }
+                }
+            ),
+        Delta { amount0: i129 { mag: 64, sign: false }, amount1: i129 { mag: 64, sign: true } }
+    );
+    assert_eq!(
+        router()
+            .swap(
+                node: RouteNode {
+                    pool_key,
+                    sqrt_ratio_limit: mathlib()
+                        .tick_to_sqrt_ratio(
+                            i129 { mag: LIMIT_ORDER_TICK_SPACING * 2, sign: false }
+                        ),
+                    skip_ahead: 0
+                },
+                token_amount: TokenAmount {
+                    token: sell_token.contract_address, amount: i129 { mag: 100, sign: false }
+                }
+            ),
+        Delta { amount0: i129 { mag: 0, sign: true }, amount1: i129 { mag: 0, sign: false } }
+    );
+
+    // place another order after the first one executed
+    sell_token.transfer(periphery.contract_address, 65);
+    assert_eq!(periphery.place_order(salt + 1, order_key, liquidity), 65);
+
+    // close the first one
+    assert_eq!(periphery.close_order(salt, order_key), (63, 0));
+    // close the second one
+    assert_eq!(periphery.close_order(salt + 1, order_key), (0, 64));
 }
