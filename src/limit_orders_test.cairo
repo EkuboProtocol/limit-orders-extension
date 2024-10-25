@@ -217,7 +217,8 @@ fn test_place_order_and_fully_execute_sell_token0() {
             .swap(
                 node: RouteNode {
                     pool_key,
-                    sqrt_ratio_limit: mathlib().tick_to_sqrt_ratio(i129 { mag: 128, sign: false }),
+                    sqrt_ratio_limit: mathlib()
+                        .tick_to_sqrt_ratio(i129 { mag: LIMIT_ORDER_TICK_SPACING, sign: false }),
                     skip_ahead: 0
                 },
                 token_amount: TokenAmount {
@@ -421,7 +422,8 @@ fn test_place_orders_only_one_executed_sell_token0() {
             .swap(
                 node: RouteNode {
                     pool_key,
-                    sqrt_ratio_limit: mathlib().tick_to_sqrt_ratio(i129 { mag: 128, sign: false }),
+                    sqrt_ratio_limit: mathlib()
+                        .tick_to_sqrt_ratio(i129 { mag: LIMIT_ORDER_TICK_SPACING, sign: false }),
                     skip_ahead: 0
                 },
                 token_amount: TokenAmount {
