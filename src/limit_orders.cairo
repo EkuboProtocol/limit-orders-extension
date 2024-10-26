@@ -343,11 +343,11 @@ pub mod LimitOrders {
             math: IMathLibLibraryDispatcher,
             request: GetOrderInfoRequest
         ) -> GetOrderInfoResult {
+            let price = core.get_pool_price(request.order_key.into());
+            assert(price.sqrt_ratio.is_non_zero(), 'Pool not initialized');
+
             let is_selling_token1 = (request.order_key.tick.mag % DOUBLE_LIMIT_ORDER_TICK_SPACING)
                 .is_non_zero();
-            let price = core.get_pool_price((request.order_key).into());
-
-            assert(price.sqrt_ratio.is_non_zero(), 'INVALID_ORDER_KEY');
 
             let ticks_crossed_at_order_tick = self
                 .ticks_crossed_last_crossing
@@ -589,19 +589,27 @@ pub mod LimitOrders {
                         );
 
                     if is_selling_token1 {
-                        assert(delta.amount0.is_zero(), 'TICK_WRONG_SIDE');
+                        assert(delta.amount0.is_zero(), 'Tick wrong side selling token1');
                         ForwardCallbackResult::PlaceOrder(delta.amount1.mag)
                     } else {
-                        assert(delta.amount1.is_zero(), 'TICK_WRONG_SIDE');
+                        assert(delta.amount1.is_zero(), 'Tick wrong side selling token0');
                         ForwardCallbackResult::PlaceOrder(delta.amount0.mag)
                     }
                 },
                 ForwardCallbackData::CloseOrder(close_order) => {
                     let CloseOrderForwardCallbackData { salt, order_key } = close_order;
 
-                    let order = self.orders.read((original_locker, salt, order_key));
-                    assert(order.liquidity.is_non_zero(), 'Zero liquidity');
+                    let core = self.core.read();
+                    let math = mathlib();
+                    let order_info = self
+                        ._get_order_info(
+                            core,
+                            math,
+                            GetOrderInfoRequest { owner: original_locker, salt, order_key }
+                        );
+                    assert(order_info.state.liquidity.is_non_zero(), 'Zero liquidity');
 
+                    // clear the order state
                     self
                         .orders
                         .write(
@@ -609,69 +617,17 @@ pub mod LimitOrders {
                             OrderState { liquidity: 0, ticks_crossed_at_create: 0 }
                         );
 
-                    let pool_key: PoolKey = order_key.into();
-
-                    let core = self.core.read();
-
-                    let is_selling_token1 = (order_key.tick.mag % DOUBLE_LIMIT_ORDER_TICK_SPACING)
-                        .is_non_zero();
-
-                    let ticks_crossed_at_order_tick = self
-                        .ticks_crossed_last_crossing
-                        .entry((order_key.token0, order_key.token1))
-                        .read(
-                            if is_selling_token1 {
-                                order_key.tick
-                            } else {
-                                order_key.tick + i129 { mag: LIMIT_ORDER_TICK_SPACING, sign: false }
-                            }
-                        );
-
-                    // the order is fully executed, just withdraw the saved balance
-                    let (amount0, amount1) = if (ticks_crossed_at_order_tick > order
-                        .ticks_crossed_at_create) {
-                        let math = mathlib();
-                        let sqrt_ratio_a = math.tick_to_sqrt_ratio(order_key.tick);
-                        let sqrt_ratio_b = math
-                            .tick_to_sqrt_ratio(
-                                order_key.tick + i129 { mag: LIMIT_ORDER_TICK_SPACING, sign: false }
-                            );
-
-                        let (amount0, amount1) = if is_selling_token1 {
-                            (
-                                math
-                                    .amount0_delta(
-                                        sqrt_ratio_a,
-                                        sqrt_ratio_b,
-                                        liquidity: order.liquidity,
-                                        round_up: false
-                                    ),
-                                0_u128
-                            )
-                        } else {
-                            (
-                                0_u128,
-                                math
-                                    .amount1_delta(
-                                        sqrt_ratio_a,
-                                        sqrt_ratio_b,
-                                        liquidity: order.liquidity,
-                                        round_up: false
-                                    )
-                            )
-                        };
-
-                        if amount0.is_non_zero() {
-                            core.load(token: order_key.token0, salt: 0, amount: amount0);
-                        } else if amount1.is_non_zero() {
-                            core.load(token: order_key.token1, salt: 0, amount: amount1);
+                    if order_info.executed {
+                        if order_info.amount0.is_non_zero() {
+                            core.load(token: order_key.token0, salt: 0, amount: order_info.amount0);
+                        } else if order_info.amount1.is_non_zero() {
+                            core.load(token: order_key.token1, salt: 0, amount: order_info.amount1);
                         }
-
-                        (amount0, amount1)
                     } else {
+                        // withdraw the liquidity position since it's not executed
                         let delta = core
                             .update_position(
-                                pool_key: pool_key,
+                                pool_key: order_key.into(),
                                 params: UpdatePositionParameters {
                                     // all the positions have the same salt
                                     salt: 0,
@@ -680,14 +636,18 @@ pub mod LimitOrders {
                                         upper: order_key.tick
                                             + i129 { mag: LIMIT_ORDER_TICK_SPACING, sign: false },
                                     },
-                                    liquidity_delta: i129 { mag: order.liquidity, sign: true }
+                                    liquidity_delta: i129 {
+                                        mag: order_info.state.liquidity, sign: true
+                                    }
                                 }
                             );
+                        // safety check that the result of _get_order_info matches up with the
+                        // amount we get from withdrawing
+                        assert(delta.amount0.mag == order_info.amount0, 'amount0 mismatch');
+                        assert(delta.amount1.mag == order_info.amount1, 'amount1 mismatch');
+                    }
 
-                        (delta.amount0.mag, delta.amount1.mag)
-                    };
-
-                    ForwardCallbackResult::CloseOrder((amount0, amount1))
+                    ForwardCallbackResult::CloseOrder((order_info.amount0, order_info.amount1))
                 }
             };
 

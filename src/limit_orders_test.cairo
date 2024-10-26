@@ -167,13 +167,30 @@ fn test_cannot_place_order_for_zero_liquidity() {
 
 #[test]
 #[fork("mainnet")]
-#[should_panic(expected: ('Zero liquidity',))]
-fn test_cannot_close_order_without_liquidity() {
+#[should_panic(expected: ('Pool not initialized',))]
+fn test_cannot_close_order_for_non_existent_pool() {
     let (pool_key, periphery) = setup();
     let salt = 0_felt252;
     let order_key = OrderKey {
         token0: pool_key.token0, token1: pool_key.token1, tick: i129 { mag: 0, sign: false }
     };
+    periphery.close_order(salt, order_key);
+}
+
+#[test]
+#[fork("mainnet")]
+#[should_panic(expected: ('Zero liquidity',))]
+fn test_cannot_close_order_twice() {
+    let (pool_key, periphery) = setup();
+    let sell_token = IERC20Dispatcher { contract_address: pool_key.token0 };
+    let salt = 0_felt252;
+    let order_key = OrderKey {
+        token0: pool_key.token0, token1: pool_key.token1, tick: i129 { mag: 0, sign: false }
+    };
+    sell_token.transfer(periphery.contract_address, 64);
+    let liquidity = 1_000_000_u128;
+    assert_eq!(periphery.place_order(salt, order_key, liquidity), 64);
+    periphery.close_order(salt, order_key);
     periphery.close_order(salt, order_key);
 }
 
