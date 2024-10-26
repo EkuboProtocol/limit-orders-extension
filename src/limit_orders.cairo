@@ -323,14 +323,23 @@ pub mod LimitOrders {
         }
     }
 
-    impl OrderKeyIntoPoolKey of Into<OrderKey, PoolKey> {
-        fn into(self: OrderKey) -> PoolKey {
+    #[generate_trait]
+    impl OrderKeyTraitImpl of OrderKeyTrait {
+        // Returns the pool key of the pool on which the order's liquidity will be placed
+        fn get_pool_key(self: OrderKey) -> PoolKey {
             PoolKey {
                 token0: self.token0,
                 token1: self.token1,
                 fee: 0,
                 tick_spacing: LIMIT_ORDER_TICK_SPACING,
                 extension: get_contract_address()
+            }
+        }
+        // Returns the bounds for the position that is used to implement the order
+        fn get_bounds(self: OrderKey) -> Bounds {
+            Bounds {
+                lower: self.tick,
+                upper: self.tick + i129 { mag: LIMIT_ORDER_TICK_SPACING, sign: false },
             }
         }
     }
@@ -343,7 +352,7 @@ pub mod LimitOrders {
             math: IMathLibLibraryDispatcher,
             request: GetOrderInfoRequest
         ) -> GetOrderInfoResult {
-            let price = core.get_pool_price(request.order_key.into());
+            let price = core.get_pool_price(request.order_key.get_pool_key());
             assert(price.sqrt_ratio.is_non_zero(), 'Pool not initialized');
 
             let is_selling_token1 = (request.order_key.tick.mag % DOUBLE_LIMIT_ORDER_TICK_SPACING)
@@ -543,8 +552,6 @@ pub mod LimitOrders {
 
                     let core = self.core.read();
 
-                    let pool_key: PoolKey = order_key.into();
-
                     let state_entry = self.pools.entry((order_key.token0, order_key.token1));
                     let order_entry = self.orders.entry((original_locker, salt, order_key));
 
@@ -563,7 +570,7 @@ pub mod LimitOrders {
                         pool_state = PoolState { ticks_crossed: 1, last_tick: initial_tick };
 
                         state_entry.write(pool_state);
-                        core.initialize_pool(order_key.into(), initial_tick);
+                        core.initialize_pool(order_key.get_pool_key(), initial_tick);
                     }
 
                     order_entry
@@ -575,15 +582,11 @@ pub mod LimitOrders {
 
                     let delta = core
                         .update_position(
-                            pool_key: pool_key,
+                            pool_key: order_key.get_pool_key(),
                             params: UpdatePositionParameters {
                                 // all the positions have the same salt
                                 salt: 0,
-                                bounds: Bounds {
-                                    lower: order_key.tick,
-                                    upper: order_key.tick
-                                        + i129 { mag: LIMIT_ORDER_TICK_SPACING, sign: false },
-                                },
+                                bounds: order_key.get_bounds(),
                                 liquidity_delta: i129 { mag: liquidity, sign: false }
                             }
                         );
@@ -627,15 +630,11 @@ pub mod LimitOrders {
                         // withdraw the liquidity position since it's not executed
                         let delta = core
                             .update_position(
-                                pool_key: order_key.into(),
+                                pool_key: order_key.get_pool_key(),
                                 params: UpdatePositionParameters {
                                     // all the positions have the same salt
                                     salt: 0,
-                                    bounds: Bounds {
-                                        lower: order_key.tick,
-                                        upper: order_key.tick
-                                            + i129 { mag: LIMIT_ORDER_TICK_SPACING, sign: false },
-                                    },
+                                    bounds: order_key.get_bounds(),
                                     liquidity_delta: i129 {
                                         mag: order_info.state.liquidity, sign: true
                                     }
