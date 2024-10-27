@@ -81,6 +81,10 @@ fn setup() -> (PoolKey, ILimitOrdersTestPeripheryDispatcher) {
         deploy_token(token_class, owner, 0xffffffffffffffffffffffffffffffff),
         deploy_token(token_class, owner, 0xffffffffffffffffffffffffffffffff)
     );
+
+    tokenA.approve(periphery.contract_address, 0xffffffffffffffffffffffffffffffff);
+    tokenB.approve(periphery.contract_address, 0xffffffffffffffffffffffffffffffff);
+
     let (token0, token1) = if (tokenA.contract_address < tokenB.contract_address) {
         (tokenA, tokenB)
     } else {
@@ -141,8 +145,6 @@ fn test_pool_cannot_be_initialized_manually() {
 #[should_panic(expected: ('Order already exists',))]
 fn test_cannot_place_two_orders_for_same_key() {
     let (pool_key, periphery) = setup();
-    let sell_token = IERC20Dispatcher { contract_address: pool_key.token0 };
-    sell_token.transfer(periphery.contract_address, 64);
     let salt = 0_felt252;
     let order_key = OrderKey {
         token0: pool_key.token0, token1: pool_key.token1, tick: i129 { mag: 0, sign: false }
@@ -182,12 +184,10 @@ fn test_cannot_close_order_for_non_existent_pool() {
 #[should_panic(expected: ('Zero liquidity',))]
 fn test_cannot_close_order_twice() {
     let (pool_key, periphery) = setup();
-    let sell_token = IERC20Dispatcher { contract_address: pool_key.token0 };
     let salt = 0_felt252;
     let order_key = OrderKey {
         token0: pool_key.token0, token1: pool_key.token1, tick: i129 { mag: 0, sign: false }
     };
-    sell_token.transfer(periphery.contract_address, 64);
     let liquidity = 1_000_000_u128;
     assert_eq!(periphery.place_order(salt, order_key, liquidity), 64);
     periphery.close_order(salt, order_key);
@@ -198,8 +198,6 @@ fn test_cannot_close_order_twice() {
 #[fork("mainnet")]
 fn test_place_order_and_fully_execute_sell_token0() {
     let (pool_key, periphery) = setup();
-    let sell_token = IERC20Dispatcher { contract_address: pool_key.token0 };
-    sell_token.transfer(periphery.contract_address, 64);
     let salt = 0_felt252;
     let order_key = OrderKey {
         token0: pool_key.token0, token1: pool_key.token1, tick: i129 { mag: 0, sign: false }
@@ -270,8 +268,6 @@ fn test_place_order_and_fully_execute_sell_token0() {
 #[fork("mainnet")]
 fn test_place_order_and_fully_execute_sell_token1() {
     let (pool_key, periphery) = setup();
-    let sell_token = IERC20Dispatcher { contract_address: pool_key.token1 };
-    sell_token.transfer(periphery.contract_address, 65);
     let salt = 0_felt252;
     let order_key = OrderKey {
         token0: pool_key.token0,
@@ -344,8 +340,6 @@ fn test_place_order_and_fully_execute_sell_token1() {
 #[fork("mainnet")]
 fn test_place_order_and_partially_execute_sell_token0() {
     let (pool_key, periphery) = setup();
-    let sell_token = IERC20Dispatcher { contract_address: pool_key.token0 };
-    sell_token.transfer(periphery.contract_address, 64);
     let salt = 0_felt252;
     let order_key = OrderKey {
         token0: pool_key.token0, token1: pool_key.token1, tick: i129 { mag: 0, sign: false }
@@ -381,8 +375,6 @@ fn test_place_order_and_partially_execute_sell_token0() {
 #[fork("mainnet")]
 fn test_place_order_and_partially_execute_sell_token1() {
     let (pool_key, periphery) = setup();
-    let sell_token = IERC20Dispatcher { contract_address: pool_key.token1 };
-    sell_token.transfer(periphery.contract_address, 65);
     let salt = 0_felt252;
     let order_key = OrderKey {
         token0: pool_key.token0,
@@ -424,7 +416,6 @@ fn test_place_order_and_partially_execute_sell_token1() {
 fn test_place_orders_only_one_executed_sell_token0() {
     let (pool_key, periphery) = setup();
     let sell_token = IERC20Dispatcher { contract_address: pool_key.token0 };
-    sell_token.transfer(periphery.contract_address, 64);
     let salt = 0_felt252;
     let order_key = OrderKey {
         token0: pool_key.token0, token1: pool_key.token1, tick: i129 { mag: 0, sign: false }
@@ -465,7 +456,6 @@ fn test_place_orders_only_one_executed_sell_token0() {
     );
 
     // place another order after the first one executed
-    sell_token.transfer(periphery.contract_address, 64);
     assert_eq!(periphery.place_order(salt + 1, order_key, liquidity), 64);
 
     // close the first one
@@ -495,7 +485,6 @@ fn test_place_orders_only_one_executed_sell_token0() {
 fn test_place_orders_only_one_executed_sell_token1() {
     let (pool_key, periphery) = setup();
     let sell_token = IERC20Dispatcher { contract_address: pool_key.token1 };
-    sell_token.transfer(periphery.contract_address, 65);
     let salt = 0_felt252;
     let order_key = OrderKey {
         token0: pool_key.token0,
@@ -541,7 +530,6 @@ fn test_place_orders_only_one_executed_sell_token1() {
     );
 
     // place another order after the first one executed
-    sell_token.transfer(periphery.contract_address, 65);
     assert_eq!(periphery.place_order(salt + 1, order_key, liquidity), 65);
 
     // close the first one
@@ -563,5 +551,115 @@ fn test_place_orders_only_one_executed_sell_token1() {
                 }
             ),
         Zero::zero()
+    );
+}
+
+
+#[test]
+#[fork("mainnet")]
+fn test_place_order_max_liquidity_one_price_sell_token0() {
+    let (pool_key, periphery) = setup();
+    assert_eq!(
+        periphery
+            .place_order(
+                salt: 0,
+                order_key: OrderKey {
+                    token0: pool_key.token0, token1: pool_key.token1, tick: Zero::zero()
+                },
+                liquidity: 0xffffffffffffffffffffffffffffffff / 2
+            ),
+        10888681855593963201936311870382544 // ~= 1e16 tokens for 18 decimals
+    );
+}
+
+#[test]
+#[fork("mainnet")]
+fn test_place_order_max_liquidity_one_price_sell_token1() {
+    let (pool_key, periphery) = setup();
+    assert_eq!(
+        periphery
+            .place_order(
+                salt: 0,
+                order_key: OrderKey {
+                    token0: pool_key.token0,
+                    token1: pool_key.token1,
+                    tick: i129 { mag: LIMIT_ORDER_TICK_SPACING, sign: false }
+                },
+                liquidity: 0xffffffffffffffffffffffffffffffff / 2
+            ),
+        10890075695378402602314366742315006 // ~= 1e16 tokens for 18 decimals
+    );
+}
+
+#[test]
+#[fork("mainnet")]
+fn test_place_order_max_liquidity_max_price_sell_token0() {
+    let (pool_key, periphery) = setup();
+    assert_eq!(
+        periphery
+            .place_order(
+                salt: 0,
+                order_key: OrderKey {
+                    token0: pool_key.token0,
+                    token1: pool_key.token1,
+                    tick: i129 { mag: 693146 * LIMIT_ORDER_TICK_SPACING, sign: false }
+                },
+                liquidity: 0xffffffffffffffffffffffffffffffff / 2
+            ),
+        590334320554063
+    );
+}
+
+#[test]
+#[fork("mainnet")]
+#[should_panic(expected: 'OVERFLOW_AMOUNT1_DELTA')]
+fn test_place_order_max_liquidity_max_price_sell_token1() {
+    let (pool_key, periphery) = setup();
+    periphery
+        .place_order(
+            salt: 0,
+            order_key: OrderKey {
+                token0: pool_key.token0,
+                token1: pool_key.token1,
+                tick: i129 { mag: 693145 * LIMIT_ORDER_TICK_SPACING, sign: false }
+            },
+            liquidity: 0xffffffffffffffffffffffffffffffff / 2
+        );
+}
+
+
+#[test]
+#[fork("mainnet")]
+#[should_panic(expected: 'OVERFLOW_AMOUNT0_DELTA')]
+fn test_place_order_max_liquidity_min_price_sell_token0() {
+    let (pool_key, periphery) = setup();
+    periphery
+        .place_order(
+            salt: 0,
+            order_key: OrderKey {
+                token0: pool_key.token0,
+                token1: pool_key.token1,
+                tick: i129 { mag: 693146 * LIMIT_ORDER_TICK_SPACING, sign: true }
+            },
+            liquidity: 0xffffffffffffffffffffffffffffffff / 2
+        );
+}
+
+#[test]
+#[fork("mainnet")]
+fn test_place_order_max_liquidity_min_price_sell_token1() {
+    let (pool_key, periphery) = setup();
+    assert_eq!(
+        periphery
+            .place_order(
+                salt: 0,
+                order_key: OrderKey {
+                    token0: pool_key.token0,
+                    token1: pool_key.token1,
+                    tick: i129 { mag: 693147 * LIMIT_ORDER_TICK_SPACING, sign: true }
+                },
+                liquidity: 0xffffffffffffffffffffffffffffffff / 2
+            ),
+        590334320554063
     );
 }

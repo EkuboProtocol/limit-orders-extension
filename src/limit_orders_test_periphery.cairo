@@ -25,7 +25,7 @@ mod LimitOrdersTestPeriphery {
     use ekubo_limit_orders_extension::test_token::{IERC20Dispatcher, IERC20DispatcherTrait};
     use starknet::storage::StoragePointerReadAccess;
     use starknet::storage::{StoragePointerWriteAccess};
-    use starknet::{get_contract_address};
+    use starknet::{get_contract_address, ContractAddress, get_caller_address};
     use super::{OrderKey, ILimitOrdersTestPeriphery};
 
     #[storage]
@@ -46,7 +46,11 @@ mod LimitOrdersTestPeriphery {
     impl LockCallback of ILocker<ContractState> {
         fn locked(ref self: ContractState, id: u32, mut data: Span<felt252>) -> Span<felt252> {
             let core = self.core.read();
-            match consume_callback_data::<ForwardCallbackData>(core, data) {
+            let (caller, forward_callback_data) = consume_callback_data::<
+                (ContractAddress, ForwardCallbackData)
+            >(core, data);
+
+            match forward_callback_data {
                 ForwardCallbackData::PlaceOrder(data) => {
                     let result: ForwardCallbackResult = forward_lock(
                         core,
@@ -69,8 +73,11 @@ mod LimitOrdersTestPeriphery {
                                 data.order_key.token0
                             }
                         };
+                        pay_token.transferFrom(caller, get_contract_address(), amount.into());
                         pay_token.approve(core.contract_address, amount.into());
                         core.pay(pay_token.contract_address);
+                    } else {
+                        panic!("Unexpected forward callback result from place_order");
                     };
 
                     serialize(@result).span()
@@ -84,14 +91,16 @@ mod LimitOrdersTestPeriphery {
                         @ForwardCallbackData::CloseOrder(data)
                     );
 
-                    // withdraw it to self
+                    // withdraw it to the caller
                     if let ForwardCallbackResult::CloseOrder((amount0, amount1)) = result {
                         if amount0.is_non_zero() {
-                            core.withdraw(data.order_key.token0, get_contract_address(), amount0);
+                            core.withdraw(data.order_key.token0, caller, amount0);
                         }
                         if amount1.is_non_zero() {
-                            core.withdraw(data.order_key.token1, get_contract_address(), amount1);
+                            core.withdraw(data.order_key.token1, caller, amount1);
                         }
+                    } else {
+                        panic!("Unexpected forward callback result from close_order");
                     };
 
                     serialize(@result).span()
@@ -106,28 +115,36 @@ mod LimitOrdersTestPeriphery {
             ref self: ContractState, salt: felt252, order_key: OrderKey, liquidity: u128
         ) -> u128 {
             match call_core_with_callback::<
-                ForwardCallbackData, ForwardCallbackResult
+                (ContractAddress, ForwardCallbackData), ForwardCallbackResult
             >(
                 self.core.read(),
-                @ForwardCallbackData::PlaceOrder(
-                    PlaceOrderForwardCallbackData { salt, order_key, liquidity }
+                @(
+                    get_caller_address(),
+                    ForwardCallbackData::PlaceOrder(
+                        PlaceOrderForwardCallbackData { salt, order_key, liquidity }
+                    )
                 )
             ) {
                 ForwardCallbackResult::PlaceOrder(amount) => { amount },
-                ForwardCallbackResult::CloseOrder(_) => { panic!("unexpected result") }
+                _ => { panic!("Unexpected call_core_with_callback result") }
             }
         }
         fn close_order(
             ref self: ContractState, salt: felt252, order_key: OrderKey
         ) -> (u128, u128) {
             match call_core_with_callback::<
-                ForwardCallbackData, ForwardCallbackResult
+                (ContractAddress, ForwardCallbackData), ForwardCallbackResult
             >(
                 self.core.read(),
-                @ForwardCallbackData::CloseOrder(CloseOrderForwardCallbackData { salt, order_key })
+                @(
+                    get_caller_address(),
+                    ForwardCallbackData::CloseOrder(
+                        CloseOrderForwardCallbackData { salt, order_key }
+                    )
+                )
             ) {
-                ForwardCallbackResult::PlaceOrder => { panic!("unexpected result") },
-                ForwardCallbackResult::CloseOrder((amount0, amount1)) => { (amount0, amount1) }
+                ForwardCallbackResult::CloseOrder((amount0, amount1)) => { (amount0, amount1) },
+                _ => { panic!("Unexpected call_core_with_callback result") },
             }
         }
     }
