@@ -181,7 +181,7 @@ fn test_cannot_close_order_for_non_existent_pool() {
 
 #[test]
 #[fork("mainnet")]
-#[should_panic(expected: ('Zero liquidity',))]
+#[should_panic(expected: ('Order does not exist',))]
 fn test_cannot_close_order_twice() {
     let (pool_key, periphery) = setup();
     let salt = 0_felt252;

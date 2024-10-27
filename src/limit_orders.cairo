@@ -90,8 +90,8 @@ pub struct GetOrderInfoResult {
     pub amount1: u128,
 }
 
-// Pass through to `Core#forward` to creates a new limit order, selling the given `sell_token` for
-// the given `buy_token` at the specified tick.
+// One of the enum options that can be passed through to `Core#forward` to create a new limit order
+// with a given key and liquidity
 #[derive(Drop, Copy, Serde)]
 pub struct PlaceOrderForwardCallbackData {
     pub salt: felt252,
@@ -99,15 +99,15 @@ pub struct PlaceOrderForwardCallbackData {
     pub liquidity: u128,
 }
 
-// Pass through to `Core#forward` to closes an order with the given token ID, returning the amount
-// of token0 and token1 to the recipient
+// One of the enum options that can be passed through to `Core#forward` to close an order with the
+// given key
 #[derive(Drop, Copy, Serde)]
 pub struct CloseOrderForwardCallbackData {
     pub salt: felt252,
     pub order_key: OrderKey,
 }
 
-// Pass to `Core#forward` to interact with limit orders
+// Pass to `Core#forward` to interact with limit orders placed via this extension
 #[derive(Drop, Copy, Serde)]
 pub enum ForwardCallbackData {
     PlaceOrder: PlaceOrderForwardCallbackData,
@@ -116,7 +116,7 @@ pub enum ForwardCallbackData {
 
 #[derive(Drop, Copy, Serde)]
 pub enum ForwardCallbackResult {
-    // Returns the amount that must be paid to cover the order
+    // Returns the amount of {token0,token1} that must be paid to cover the order
     PlaceOrder: u128,
     // The amount of token0 and token1 received for closing the order
     CloseOrder: (u128, u128)
@@ -212,30 +212,11 @@ pub mod LimitOrders {
     }
 
     #[derive(starknet::Event, Drop)]
-    struct OrderPlaced {
-        owner: ContractAddress,
-        salt: felt252,
-        order_key: OrderKey,
-        amount: u128,
-        liquidity: u128,
-    }
-
-    #[derive(starknet::Event, Drop)]
-    struct OrderClosed {
-        owner: ContractAddress,
-        salt: felt252,
-        amount0: u128,
-        amount1: u128,
-    }
-
-    #[derive(starknet::Event, Drop)]
     #[event]
     enum Event {
         #[flat]
         UpgradeableEvent: upgradeable_component::Event,
         OwnedEvent: owned_component::Event,
-        OrderPlaced: OrderPlaced,
-        OrderClosed: OrderClosed,
     }
 
     #[abi(embed_v0)]
@@ -542,8 +523,8 @@ pub mod LimitOrders {
 
             let result: ForwardCallbackResult =
                 match consume_callback_data::<ForwardCallbackData>(core, data) {
-                ForwardCallbackData::PlaceOrder(place_order) => {
-                    let PlaceOrderForwardCallbackData { salt, order_key, liquidity } = place_order;
+                ForwardCallbackData::PlaceOrder(params) => {
+                    let PlaceOrderForwardCallbackData { salt, order_key, liquidity } = params;
 
                     assert(liquidity > 0, 'Liquidity must be non-zero');
 
@@ -599,8 +580,8 @@ pub mod LimitOrders {
                         ForwardCallbackResult::PlaceOrder(delta.amount0.mag)
                     }
                 },
-                ForwardCallbackData::CloseOrder(close_order) => {
-                    let CloseOrderForwardCallbackData { salt, order_key } = close_order;
+                ForwardCallbackData::CloseOrder(params) => {
+                    let CloseOrderForwardCallbackData { salt, order_key } = params;
 
                     let core = self.core.read();
                     let math = mathlib();
@@ -610,7 +591,7 @@ pub mod LimitOrders {
                             math,
                             GetOrderInfoRequest { owner: original_locker, salt, order_key }
                         );
-                    assert(order_info.state.liquidity.is_non_zero(), 'Zero liquidity');
+                    assert(order_info.state.liquidity.is_non_zero(), 'Order does not exist');
 
                     // clear the order state
                     self
