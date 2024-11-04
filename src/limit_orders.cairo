@@ -211,9 +211,28 @@ pub mod LimitOrders {
             );
     }
 
+    #[derive(Drop, Copy, starknet::Event)]
+    pub struct OrderPlaced {
+        pub owner: ContractAddress,
+        pub salt: felt252,
+        pub order_key: OrderKey,
+        pub amount: u128,
+    }
+
+    #[derive(Drop, Copy, starknet::Event)]
+    pub struct OrderClosed {
+        pub owner: ContractAddress,
+        pub salt: felt252,
+        pub order_key: OrderKey,
+        pub amount0: u128,
+        pub amount1: u128,
+    }
+
     #[derive(starknet::Event, Drop)]
     #[event]
     enum Event {
+        OrderPlaced: OrderPlaced,
+        OrderClosed: OrderClosed,
         #[flat]
         UpgradeableEvent: upgradeable_component::Event,
         OwnedEvent: owned_component::Event,
@@ -572,13 +591,17 @@ pub mod LimitOrders {
                             }
                         );
 
-                    if is_selling_token1 {
+                    let amount = if is_selling_token1 {
                         assert(delta.amount0.is_zero(), 'Tick wrong side selling token1');
-                        ForwardCallbackResult::PlaceOrder(delta.amount1.mag)
+                        delta.amount1.mag
                     } else {
                         assert(delta.amount1.is_zero(), 'Tick wrong side selling token0');
-                        ForwardCallbackResult::PlaceOrder(delta.amount0.mag)
-                    }
+                        delta.amount0.mag
+                    };
+
+                    self.emit(OrderPlaced { owner: original_locker, salt, order_key, amount });
+
+                    ForwardCallbackResult::PlaceOrder(amount)
                 },
                 ForwardCallbackData::CloseOrder(params) => {
                     let CloseOrderForwardCallbackData { salt, order_key } = params;
@@ -626,6 +649,17 @@ pub mod LimitOrders {
                         assert(delta.amount0.mag == order_info.amount0, 'amount0 mismatch');
                         assert(delta.amount1.mag == order_info.amount1, 'amount1 mismatch');
                     }
+
+                    self
+                        .emit(
+                            OrderClosed {
+                                owner: original_locker,
+                                salt,
+                                order_key,
+                                amount0: order_info.amount0,
+                                amount1: order_info.amount1
+                            }
+                        );
 
                     ForwardCallbackResult::CloseOrder((order_info.amount0, order_info.amount1))
                 }
