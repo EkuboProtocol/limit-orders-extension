@@ -17,22 +17,24 @@ pub struct OrderKey {
 // State of a particular order, stored separately per (owner, salt, order key)
 #[derive(Drop, Copy, Serde, PartialEq, Debug)]
 pub(crate) struct OrderState {
-    // The total number of initialized ticks that the pool has crossed when this order was created
-    pub ticks_crossed_at_create: u64,
+    // Snapshot of the pool's initialized_ticks_crossed when the order was created
+    pub initialized_ticks_crossed_snapshot: u64,
     // How much liquidity was deposited for this order
     pub liquidity: u128,
 }
 
 impl OrderStateStorePacking of StorePacking<OrderState, felt252> {
     fn pack(value: OrderState) -> felt252 {
-        u256 { low: value.liquidity, high: value.ticks_crossed_at_create.into() }
+        u256 { low: value.liquidity, high: value.initialized_ticks_crossed_snapshot.into() }
             .try_into()
             .unwrap()
     }
     fn unpack(value: felt252) -> OrderState {
         let x: u256 = value.into();
 
-        OrderState { ticks_crossed_at_create: x.high.try_into().unwrap(), liquidity: x.low }
+        OrderState {
+            initialized_ticks_crossed_snapshot: x.high.try_into().unwrap(), liquidity: x.low
+        }
     }
 }
 
@@ -40,7 +42,7 @@ impl OrderStateStorePacking of StorePacking<OrderState, felt252> {
 #[derive(Drop, Copy, Serde, PartialEq)]
 pub(crate) struct PoolState {
     // The number of times this pool has crossed an initialized tick plus one
-    pub ticks_crossed: u64,
+    pub initialized_ticks_crossed: u64,
     // The last tick that was seen for the pool
     pub last_tick: i129,
 }
@@ -50,9 +52,9 @@ impl PoolStateStorePacking of StorePacking<PoolState, felt252> {
         u256 {
             low: value.last_tick.mag,
             high: if value.last_tick.is_negative() {
-                value.ticks_crossed.into() + 0x10000000000000000
+                value.initialized_ticks_crossed.into() + 0x10000000000000000
             } else {
-                value.ticks_crossed.into()
+                value.initialized_ticks_crossed.into()
             }
         }
             .try_into()
@@ -64,12 +66,12 @@ impl PoolStateStorePacking of StorePacking<PoolState, felt252> {
         if (x.high >= 0x10000000000000000) {
             PoolState {
                 last_tick: i129 { mag: x.low, sign: true },
-                ticks_crossed: (x.high - 0x10000000000000000).try_into().unwrap()
+                initialized_ticks_crossed: (x.high - 0x10000000000000000).try_into().unwrap()
             }
         } else {
             PoolState {
                 last_tick: i129 { mag: x.low, sign: false },
-                ticks_crossed: x.high.try_into().unwrap()
+                initialized_ticks_crossed: x.high.try_into().unwrap()
             }
         }
     }
@@ -184,7 +186,9 @@ pub mod LimitOrders {
     struct Storage {
         core: ICoreDispatcher,
         pools: Map<(ContractAddress, ContractAddress), PoolState>,
-        ticks_crossed_last_crossing: Map<(ContractAddress, ContractAddress), Map<i129, u64>>,
+        initialized_ticks_crossed_last_crossing: Map<
+            (ContractAddress, ContractAddress), Map<i129, u64>
+        >,
         orders: Map<(ContractAddress, felt252, OrderKey), OrderState>,
         #[substorage(v0)]
         upgradeable: upgradeable_component::Storage,
@@ -211,7 +215,7 @@ pub mod LimitOrders {
             );
     }
 
-    #[derive(Drop, Copy, starknet::Event)]
+    #[derive(Drop, starknet::Event)]
     pub struct OrderPlaced {
         pub owner: ContractAddress,
         pub salt: felt252,
@@ -219,7 +223,7 @@ pub mod LimitOrders {
         pub amount: u128,
     }
 
-    #[derive(Drop, Copy, starknet::Event)]
+    #[derive(Drop, starknet::Event)]
     pub struct OrderClosed {
         pub owner: ContractAddress,
         pub salt: felt252,
@@ -358,8 +362,8 @@ pub mod LimitOrders {
             let is_selling_token1 = (request.order_key.tick.mag % DOUBLE_LIMIT_ORDER_TICK_SPACING)
                 .is_non_zero();
 
-            let ticks_crossed_at_order_tick = self
-                .ticks_crossed_last_crossing
+            let initialized_ticks_crossed_at_order_tick = self
+                .initialized_ticks_crossed_last_crossing
                 .entry((request.order_key.token0, request.order_key.token1))
                 .read(
                     if is_selling_token1 {
@@ -372,7 +376,8 @@ pub mod LimitOrders {
             let order = self.orders.read((request.owner, request.salt, request.order_key));
 
             // the order is fully executed, just withdraw the saved balance
-            if (ticks_crossed_at_order_tick > order.ticks_crossed_at_create) {
+            if (initialized_ticks_crossed_at_order_tick > order
+                .initialized_ticks_crossed_snapshot) {
                 let sqrt_ratio_a = math.tick_to_sqrt_ratio(request.order_key.tick);
                 let sqrt_ratio_b = math
                     .tick_to_sqrt_ratio(
@@ -436,10 +441,10 @@ pub mod LimitOrders {
             let tick_after_swap = core.get_pool_price(pool_key).tick;
             let state_entry = self.pools.entry((pool_key.token0, pool_key.token1));
             let state = state_entry.read();
-            let mut ticks_crossed = state.ticks_crossed;
+            let mut initialized_ticks_crossed = state.initialized_ticks_crossed;
 
-            let pool_ticks_crossed_entry = self
-                .ticks_crossed_last_crossing
+            let pool_initialized_ticks_crossed_entry = self
+                .initialized_ticks_crossed_last_crossing
                 .entry((pool_key.token0, pool_key.token1));
 
             if (tick_after_swap != state.last_tick) {
@@ -498,8 +503,9 @@ pub mod LimitOrders {
                             } else {
                                 delta.amount0.mag
                             };
-                        ticks_crossed += 1;
-                        pool_ticks_crossed_entry.write(next_tick, ticks_crossed);
+                        initialized_ticks_crossed += 1;
+                        pool_initialized_ticks_crossed_entry
+                            .write(next_tick, initialized_ticks_crossed);
                     };
 
                     tick_current =
@@ -526,7 +532,8 @@ pub mod LimitOrders {
                         );
                 }
 
-                state_entry.write(PoolState { ticks_crossed, last_tick: tick_after_swap });
+                state_entry
+                    .write(PoolState { initialized_ticks_crossed, last_tick: tick_after_swap });
             }
 
             array![].span()
@@ -560,14 +567,15 @@ pub mod LimitOrders {
                     let mut pool_state = state_entry.read();
 
                     // the ticks crossed is zero IFF the pool is not initialized
-                    if (pool_state.ticks_crossed.is_zero()) {
+                    if (pool_state.initialized_ticks_crossed.is_zero()) {
                         let initial_tick = if is_selling_token1 {
                             order_key.tick + i129 { mag: LIMIT_ORDER_TICK_SPACING, sign: false }
                         } else {
                             order_key.tick
                         };
 
-                        pool_state = PoolState { ticks_crossed: 1, last_tick: initial_tick };
+                        pool_state =
+                            PoolState { initialized_ticks_crossed: 1, last_tick: initial_tick };
 
                         state_entry.write(pool_state);
                         core.initialize_pool(order_key.get_pool_key(), initial_tick);
@@ -576,7 +584,9 @@ pub mod LimitOrders {
                     order_entry
                         .write(
                             OrderState {
-                                ticks_crossed_at_create: pool_state.ticks_crossed, liquidity
+                                initialized_ticks_crossed_snapshot: pool_state
+                                    .initialized_ticks_crossed,
+                                liquidity
                             }
                         );
 
@@ -621,7 +631,7 @@ pub mod LimitOrders {
                         .orders
                         .write(
                             (original_locker, salt, order_key),
-                            OrderState { liquidity: 0, ticks_crossed_at_create: 0 }
+                            OrderState { liquidity: 0, initialized_ticks_crossed_snapshot: 0 }
                         );
 
                     if order_info.executed {

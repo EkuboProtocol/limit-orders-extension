@@ -213,7 +213,7 @@ fn test_place_order_and_fully_execute_sell_token0() {
             ),
         array![
             GetOrderInfoResult {
-                state: OrderState { ticks_crossed_at_create: 1, liquidity: 1000000 },
+                state: OrderState { initialized_ticks_crossed_snapshot: 1, liquidity: 1000000 },
                 executed: false,
                 amount0: 63,
                 amount1: 0
@@ -251,7 +251,7 @@ fn test_place_order_and_fully_execute_sell_token0() {
             ),
         array![
             GetOrderInfoResult {
-                state: OrderState { ticks_crossed_at_create: 1, liquidity: 1000000 },
+                state: OrderState { initialized_ticks_crossed_snapshot: 1, liquidity: 1000000 },
                 executed: true,
                 amount0: 0,
                 amount1: 64,
@@ -285,7 +285,7 @@ fn test_place_order_and_fully_execute_sell_token1() {
             ),
         array![
             GetOrderInfoResult {
-                state: OrderState { ticks_crossed_at_create: 1, liquidity: 1000000 },
+                state: OrderState { initialized_ticks_crossed_snapshot: 1, liquidity: 1000000 },
                 executed: false,
                 amount0: 0,
                 amount1: 64
@@ -323,7 +323,7 @@ fn test_place_order_and_fully_execute_sell_token1() {
             ),
         array![
             GetOrderInfoResult {
-                state: OrderState { ticks_crossed_at_create: 1, liquidity: 1000000 },
+                state: OrderState { initialized_ticks_crossed_snapshot: 1, liquidity: 1000000 },
                 executed: true,
                 amount0: 63,
                 amount1: 0
