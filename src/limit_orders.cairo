@@ -10,7 +10,7 @@ pub struct OrderKey {
     pub token1: ContractAddress,
     // The price at which the token should be bought/sold. Must be a multiple of tick spacing.
     // If the specified tick is evenly divisible by 2 * tick_spacing, it implies that the order is
-    // selling token1.
+    // selling token0. Otherwise, it is selling token1.
     pub tick: i129,
 }
 
