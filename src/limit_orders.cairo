@@ -220,6 +220,7 @@ pub mod LimitOrders {
         pub owner: ContractAddress,
         pub salt: felt252,
         pub order_key: OrderKey,
+        pub liquidity: u128,
         pub amount: u128,
     }
 
@@ -607,7 +608,12 @@ pub mod LimitOrders {
                         delta.amount0.mag
                     };
 
-                    self.emit(OrderPlaced { owner: original_locker, salt, order_key, amount });
+                    self
+                        .emit(
+                            OrderPlaced {
+                                owner: original_locker, salt, order_key, liquidity, amount
+                            }
+                        );
 
                     ForwardCallbackResult::PlaceOrder(amount)
                 },
