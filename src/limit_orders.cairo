@@ -557,8 +557,6 @@ pub mod LimitOrders {
                     let is_selling_token1 = (order_key.tick.mag % DOUBLE_LIMIT_ORDER_TICK_SPACING)
                         .is_non_zero();
 
-                    let core = self.core.read();
-
                     let state_entry = self.pools.entry((order_key.token0, order_key.token1));
                     let order_entry = self.orders.entry((original_locker, salt, order_key));
 
@@ -616,7 +614,6 @@ pub mod LimitOrders {
                 ForwardCallbackData::CloseOrder(params) => {
                     let CloseOrderForwardCallbackData { salt, order_key } = params;
 
-                    let core = self.core.read();
                     let math = mathlib();
                     let order_info = self
                         ._get_order_info(
