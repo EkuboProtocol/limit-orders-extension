@@ -789,7 +789,7 @@ fn test_audit_tick_state_is_updated_on_empty_pools_positive_tick() {
                 skip_ahead: 0
             },
             token_amount: TokenAmount {
-                token: pool_key.token1, amount: i129 { mag: 0, sign: false }
+                token: pool_key.token1, amount: i129 { mag: 1000, sign: false }
             }
         );
 
@@ -842,7 +842,7 @@ fn test_audit_tick_state_is_updated_on_empty_pools_negative_tick() {
                 skip_ahead: 0
             },
             token_amount: TokenAmount {
-                token: pool_key.token0, amount: i129 { mag: 0, sign: false }
+                token: pool_key.token0, amount: i129 { mag: 1000, sign: false }
             }
         );
 
