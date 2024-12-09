@@ -1,22 +1,24 @@
+use ekubo::interfaces::positions::IPositionsDispatcherTrait;
 use core::num::traits::{Zero};
 use ekubo::interfaces::core::{ICoreDispatcherTrait, ICoreDispatcher, IExtensionDispatcher};
 use ekubo::interfaces::mathlib::{dispatcher as mathlib, IMathLibDispatcherTrait};
 use ekubo::interfaces::positions::{IPositionsDispatcher};
-use ekubo::interfaces::router::{IRouterDispatcher, IRouterDispatcherTrait, RouteNode, TokenAmount};
+use ekubo::interfaces::router::{IRouterDispatcher, IRouterDispatcherTrait, RouteNode, TokenAmount}; 
+use ekubo::types::bounds::{Bounds};
 use ekubo::types::call_points::{CallPoints};
-use ekubo::types::delta::{Delta};
+use ekubo::types::delta::{Delta}; 
 use ekubo::types::i129::{i129};
 use ekubo::types::keys::{PoolKey};
 use ekubo_limit_orders_extension::limit_orders::{
     OrderKey, GetOrderInfoRequest, GetOrderInfoResult, ILimitOrdersDispatcher,
-    ILimitOrdersDispatcherTrait, OrderState, LimitOrders::LIMIT_ORDER_TICK_SPACING
+    ILimitOrdersDispatcherTrait, OrderState, LimitOrders::LIMIT_ORDER_TICK_SPACING, PoolState
 };
 use ekubo_limit_orders_extension::limit_orders_test_periphery::{
     ILimitOrdersTestPeripheryDispatcher, ILimitOrdersTestPeripheryDispatcherTrait
 };
 use ekubo_limit_orders_extension::test_token::{IERC20Dispatcher, IERC20DispatcherTrait};
-use snforge_std::{declare, DeclareResultTrait, ContractClassTrait, ContractClass};
-use starknet::{get_contract_address, contract_address_const, ContractAddress};
+use snforge_std::{declare, DeclareResultTrait, ContractClassTrait, ContractClass, load, map_entry_address};
+use starknet::{get_contract_address, contract_address_const, ContractAddress, storage_access::StorePacking};
 
 fn deploy_token(
     class: @ContractClass, recipient: ContractAddress, amount: u256
@@ -662,4 +664,369 @@ fn test_place_order_max_liquidity_min_price_sell_token1() {
             ),
         590334320554063
     );
+}
+
+
+#[test]
+#[fork("mainnet")]
+#[should_panic(expected: ('Order does not exist',))]
+fn test_audit_cannot_close_order_that_doest_not_exist() {
+    let (pool_key, periphery) = setup();
+    let salt = 0_felt252;
+    let order_key = OrderKey {
+        token0: pool_key.token0, token1: pool_key.token1, tick: i129 { mag: 0, sign: false }
+    };
+
+    let liquidity = 1_000_000_u128;
+    assert_eq!(periphery.place_order(salt, order_key, liquidity), 64);
+
+    let wrong_salt = 1_felt252;
+    periphery.close_order(wrong_salt, order_key);
+}
+
+#[test]
+#[fork("mainnet")]
+#[should_panic(expected: ('Tick wrong side selling token0',))]
+fn test_audit_cannot_set_order_in_current_bounds_token0() {
+    let (pool_key, periphery) = setup();
+
+    // Set order to sell token0 at tick 100*LIMIT_ORDER_TICK_SPACING
+    let salt = 0_felt252;
+    let order_key = OrderKey {
+        token0: pool_key.token0,
+        token1: pool_key.token1,
+        tick: i129 { mag: 100 * LIMIT_ORDER_TICK_SPACING, sign: false }
+    };
+    let liquidity = 1_000_000_u128;
+    periphery.place_order(salt, order_key, liquidity);
+
+    // Swap to set the current price between tick 100*LIMIT_ORDER_TICK_SPACING and
+    // 101*LIMIT_ORDER_TICK_SPACING
+    let sell_token = IERC20Dispatcher { contract_address: pool_key.token1 };
+    sell_token.transfer(router().contract_address, 100);
+    router()
+        .swap(
+            node: RouteNode {
+                pool_key,
+                sqrt_ratio_limit: mathlib()
+                    .tick_to_sqrt_ratio(i129 { mag: 100 * LIMIT_ORDER_TICK_SPACING, sign: false })
+                    + 1,
+                skip_ahead: 0
+            },
+            token_amount: TokenAmount {
+                token: sell_token.contract_address, amount: i129 { mag: 100, sign: false }
+            }
+        );
+
+    // Try to set order inside the current bounds
+    periphery.place_order(1_felt252, order_key, liquidity);
+}
+
+#[test]
+#[fork("mainnet")]
+#[should_panic(expected: ('Tick wrong side selling token1',))]
+fn test_audit_cannot_set_order_in_current_bounds_token1() {
+    let (pool_key, periphery) = setup();
+
+    // Set order to sell token1 at tick 101*LIMIT_ORDER_TICK_SPACING
+    let salt = 0_felt252;
+    let order_key = OrderKey {
+        token0: pool_key.token0,
+        token1: pool_key.token1,
+        tick: i129 { mag: 101 * LIMIT_ORDER_TICK_SPACING, sign: false }
+    };
+    let liquidity = 1_000_000_u128;
+    periphery.place_order(salt, order_key, liquidity);
+
+    // Swap to set the current price between tick 101*LIMIT_ORDER_TICK_SPACING and
+    // 100*LIMIT_ORDER_TICK_SPACING
+    let sell_token = IERC20Dispatcher { contract_address: pool_key.token0 };
+    sell_token.transfer(router().contract_address, 100);
+    router()
+        .swap(
+            node: RouteNode {
+                pool_key,
+                sqrt_ratio_limit: mathlib()
+                    .tick_to_sqrt_ratio(i129 { mag: 102 * LIMIT_ORDER_TICK_SPACING, sign: false })
+                    - 1,
+                skip_ahead: 0
+            },
+            token_amount: TokenAmount {
+                token: sell_token.contract_address, amount: i129 { mag: 100, sign: false }
+            }
+        );
+
+    periphery.place_order(1_felt252, order_key, liquidity);
+}
+
+#[test]
+#[fork("mainnet")]
+fn test_audit_tick_state_is_updated_on_empty_pools_positive_tick() {
+    let (pool_key, periphery) = setup();
+
+    // Initialize pool by placing an order
+    let salt = 0_felt252;
+    let order_key = OrderKey {
+        token0: pool_key.token0,
+        token1: pool_key.token1,
+        tick: i129 { mag: 1 * LIMIT_ORDER_TICK_SPACING, sign: false }
+    };
+    let liquidity = 1_000_000_u128;
+    periphery.place_order(salt, order_key, liquidity);
+
+    // Close order and leave the pool without liquidity
+    periphery.close_order(salt, order_key);
+    let liquidity = ekubo_core().get_pool_liquidity(pool_key);
+    assert_eq!(liquidity, 0);
+
+    // Move the current tick
+    router()
+        .swap(
+            node: RouteNode {
+                pool_key,
+                sqrt_ratio_limit: mathlib()
+                    .tick_to_sqrt_ratio(i129 { mag: 102 * LIMIT_ORDER_TICK_SPACING, sign: false }),
+                skip_ahead: 0
+            },
+            token_amount: TokenAmount {
+                token: pool_key.token1, amount: i129 { mag: 1000, sign: false }
+            }
+        );
+
+    // Check that tick in pool state matches with tick in extension state
+    let pool_state = ekubo_core().get_pool_price(pool_key);
+
+    // Reading the storage
+    let map_key = (pool_key.token0, pool_key.token1);
+    let mut map_entry: Array<felt252> = array![];
+    map_key.serialize(ref map_entry);
+    let extension_pool_state_felt252 = load(
+        pool_key.extension, map_entry_address(selector!("pools"), map_entry.span()), 1
+    )
+        .at(0);
+    let extension_pool_state = StorePacking::<
+        PoolState, felt252
+    >::unpack(*extension_pool_state_felt252);
+
+    assert_eq!(pool_state.tick.sign, extension_pool_state.last_tick.sign);
+    assert_eq!(pool_state.tick.mag, extension_pool_state.last_tick.mag);
+}
+
+#[test]
+#[fork("mainnet")]
+fn test_audit_tick_state_is_updated_on_empty_pools_negative_tick() {
+    let (pool_key, periphery) = setup();
+
+    // Initialize pool by placing an order
+    let salt = 0_felt252;
+    let order_key = OrderKey {
+        token0: pool_key.token0,
+        token1: pool_key.token1,
+        tick: i129 { mag: 1 * LIMIT_ORDER_TICK_SPACING, sign: false }
+    };
+    let liquidity = 1_000_000_u128;
+    periphery.place_order(salt, order_key, liquidity);
+
+    // Close order and leave the pool without liquidity
+    periphery.close_order(salt, order_key);
+    let liquidity = ekubo_core().get_pool_liquidity(pool_key);
+    assert_eq!(liquidity, 0);
+
+    // Move the current tick
+    router()
+        .swap(
+            node: RouteNode {
+                pool_key,
+                sqrt_ratio_limit: mathlib()
+                    .tick_to_sqrt_ratio(i129 { mag: 1003 * LIMIT_ORDER_TICK_SPACING, sign: true }),
+                skip_ahead: 0
+            },
+            token_amount: TokenAmount {
+                token: pool_key.token0, amount: i129 { mag: 1000, sign: false }
+            }
+        );
+
+    // Check that tick in pool state matches with tick in extension state
+    let pool_state = ekubo_core().get_pool_price(pool_key);
+
+    // Reading the storage
+    let map_key = (pool_key.token0, pool_key.token1);
+    let mut map_entry: Array<felt252> = array![];
+    map_key.serialize(ref map_entry);
+    let extension_pool_state_felt252 = load(
+        pool_key.extension, map_entry_address(selector!("pools"), map_entry.span()), 1
+    )
+        .at(0);
+    let extension_pool_state = StorePacking::<
+        PoolState, felt252
+    >::unpack(*extension_pool_state_felt252);
+
+    assert_eq!(pool_state.tick.sign, extension_pool_state.last_tick.sign);
+    assert_eq!(pool_state.tick.mag, extension_pool_state.last_tick.mag);
+}
+
+#[test]
+#[fork("mainnet")]
+#[should_panic(
+    expected: (
+        0x46a6158a16a947e5916b2a2ca68501a45e93d7110e81aa2d6438b1c57c879a3,
+        0x0,
+        'Only limit orders',
+        0x11,
+    )
+)]
+fn test_audit_cannot_add_liquidity_outside_the_extension() {
+    let (pool_key, periphery) = setup();
+
+    // Initialize pool
+    let salt = 0_felt252;
+    let order_key = OrderKey {
+        token0: pool_key.token0, token1: pool_key.token1, tick: i129 { mag: 0, sign: false }
+    };
+    let liquidity = 100_000_u128;
+    periphery.place_order(salt, order_key, liquidity);
+
+    let bounds = Bounds {
+        lower: i129 { mag: 100 * LIMIT_ORDER_TICK_SPACING, sign: false },
+        upper: i129 { mag: 101 * LIMIT_ORDER_TICK_SPACING, sign: false }
+    };
+
+    // Try to deposit liquidity
+    let positions_contract = positions();
+    positions_contract.mint_and_deposit(pool_key, bounds, liquidity);
+}
+
+#[test]
+#[fork("mainnet")]
+fn test_audit_extreme_orders_are_executed() {
+    let (pool_key, periphery) = setup();
+
+    let extension = ILimitOrdersDispatcher { contract_address: pool_key.extension };
+
+    let salt = 0_felt252;
+    let order_key = OrderKey {
+        token0: pool_key.token0,
+        token1: pool_key.token1,
+        tick: i129 { mag: 693145 * LIMIT_ORDER_TICK_SPACING, sign: false }
+    };
+
+    let amount = periphery.place_order(salt: salt, order_key: order_key, liquidity: 100_u128);
+
+    let sell_token = IERC20Dispatcher { contract_address: pool_key.token0 };
+    sell_token.transfer(router().contract_address, 100);
+    router()
+        .swap(
+            node: RouteNode {
+                pool_key,
+                sqrt_ratio_limit: mathlib()
+                    .tick_to_sqrt_ratio(
+                        i129 { mag: 693145 * LIMIT_ORDER_TICK_SPACING, sign: false }
+                    ),
+                skip_ahead: 0
+            },
+            token_amount: TokenAmount {
+                token: pool_key.token1, amount: i129 { mag: amount, sign: true }
+            }
+        );
+
+    let (collected_amount0, collected_amount1) = periphery
+        .close_order(salt: salt, order_key: order_key,);
+
+    assert_ge!(1, collected_amount0);
+    assert_eq!(collected_amount1, 0);
+
+    assert_eq!(
+        extension
+            .get_order_infos(
+                array![GetOrderInfoRequest { owner: periphery.contract_address, salt, order_key }]
+                    .span()
+            ),
+        array![
+            GetOrderInfoResult {
+                state: OrderState { initialized_ticks_crossed_snapshot: 0, liquidity: 0 },
+                executed: true,
+                amount0: 0,
+                amount1: 0,
+            }
+        ]
+            .span()
+    );
+}
+
+#[test]
+#[fork("mainnet")]
+fn test_audit_multiple_orders_same_bounds() {
+    let (pool_key, periphery) = setup();
+
+    let extension = ILimitOrdersDispatcher { contract_address: pool_key.extension };
+
+    let salt1 = 1_felt252;
+    let salt2 = 2_felt252;
+
+    let order_key = OrderKey {
+        token0: pool_key.token0,
+        token1: pool_key.token1,
+        tick: i129 { mag: 2 * LIMIT_ORDER_TICK_SPACING, sign: false }
+    };
+
+    periphery.place_order(salt: salt1, order_key: order_key, liquidity: 100_000_u128);
+    periphery.place_order(salt: salt2, order_key: order_key, liquidity: 200_000_u128);
+
+    let sell_token = IERC20Dispatcher { contract_address: pool_key.token1 };
+    sell_token.transfer(router().contract_address, 200);
+    router()
+        .swap(
+            node: RouteNode {
+                pool_key,
+                sqrt_ratio_limit: mathlib()
+                    .tick_to_sqrt_ratio(i129 { mag: 3 * LIMIT_ORDER_TICK_SPACING, sign: false }),
+                skip_ahead: 0
+            },
+            token_amount: TokenAmount {
+                token: sell_token.contract_address, amount: i129 { mag: 200, sign: false }
+            }
+        );
+
+    assert_eq!(
+        extension
+            .get_order_infos(
+                array![
+                    GetOrderInfoRequest {
+                        owner: periphery.contract_address, salt: salt1, order_key
+                    },
+                    GetOrderInfoRequest {
+                        owner: periphery.contract_address, salt: salt2, order_key
+                    }
+                ]
+                    .span()
+            ),
+        array![
+            GetOrderInfoResult {
+                state: OrderState {
+                    initialized_ticks_crossed_snapshot: 1, liquidity: 100_000_u128
+                },
+                executed: true,
+                amount0: 0,
+                amount1: 6,
+            },
+            GetOrderInfoResult {
+                state: OrderState {
+                    initialized_ticks_crossed_snapshot: 1, liquidity: 200_000_u128
+                },
+                executed: true,
+                amount0: 0,
+                amount1: 12,
+            }
+        ]
+            .span()
+    );
+
+    let (received_amount_t0_1, received_amount_t1_1) = periphery.close_order(salt1, order_key);
+    let (received_amount_t0_2, received_amount_t1_2) = periphery.close_order(salt2, order_key);
+
+    assert_eq!(received_amount_t0_1, 0);
+    assert_eq!(received_amount_t0_2, 0);
+
+    assert_eq!(received_amount_t1_1, 6);
+    assert_eq!(received_amount_t1_2, 12);
 }
